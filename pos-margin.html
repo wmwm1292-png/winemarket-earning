@@ -679,831 +679,616 @@ let unmatchedSet = new Set();
 let customCosts  = {};          // {normalizedKey: costPerUnit} â€” ì‚¬ìš©ìž ì§ì ‘ ìž…ë ¥í•œ ì›ê°€
 let fixedExpenses = {};         // {id: {name, amount}} â€” ê³ ì •ì§€ì¶œ
 let feeRates     = { card: 2.3, easy: 1.5, cash: 0.5 }; // ìˆ˜ìˆ˜ë£Œìœ¨ (%)
-let payTotals    = { card: 0, easy: 0, cash: 0, cashReceipt: 0 }; // ê²°ì œìˆ˜ë‹¨ë³„ ì›” ë§¤ì¶œì•¡ (ìˆ˜ë™ ìž…ë ¥)
-let refItems     = { trade: 0, costco: 0 };              // ì°¸ê³ ìš© í•­ëª© (ìˆœìˆ˜ìµ ê³„ì‚° ë¯¸í¬í•¨)
-
-/* â•â•â•â•â•â•â•â•â•â•â• INIT â•â•â•â•â•â•â•â•â•â•â• */
-(function init() {
-  const now = new Date();
-  filterMonth = now.toISOString().slice(0, 7);
-  document.getElementById('monthPick').value = filterMonth;
-
-  const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-  document.getElementById('storeLabel').textContent = storeCode;
-
-  // Firebase
-  try {
-    firebase.initializeApp({
-      apiKey: "AIzaSyC_4z3oKd9YM5aMgeFMIN8DcqBhDGpUR7A",
-      authDomain: "wineshop-sales.firebaseapp.com",
-      databaseURL: "https://wineshop-sales-default-rtdb.firebaseio.com",
-      projectId: "wineshop-sales",
-      storageBucket: "wineshop-sales.firebasestorage.app",
-      messagingSenderId: "907276767901",
-      appId: "1:907276767901:web:216b5733695c5fe981fa74"
-    });
-    const db = firebase.database();
-
-    // Products (ì›ê°€ ë°ì´í„°)
-    db.ref('products').on('value', snap => {
-      const d = snap.val();
-      if (d && d.list && d.list.length) {
-        products = d.list;
-        if (posRows.length) matchCosts();
-        setSyncDot(true);
-      }
-    });
-
-    // Cash/bank sales
-    db.ref('sales_' + storeCode).on('value', snap => {
-      const d = snap.val();
-      cashRaw = d ? Object.values(d).filter(Boolean) : [];
-      render();
-      setSyncDot(true);
-    }, () => setSyncDot(false));
-
-    // ì‚¬ìš©ìžê°€ ì§ì ‘ ìž…ë ¥í•œ ì›ê°€ (pos_custom_costs)
-    db.ref('pos_custom_costs').on('value', snap => {
-      customCosts = snap.val() || {};
-      if (posRows.length) matchCosts();
-    });
-
-    // ê³ ì •ì§€ì¶œ & ìˆ˜ìˆ˜ë£Œìœ¨ (ë§¤ìž¥ë³„ ì„¤ì •)
-    const storeSettingsRef = db.ref('store_settings/' + storeCode);
-    storeSettingsRef.child('fixed_expenses').on('value', snap => {
-      fixedExpenses = snap.val() || {};
-      if (activeTab === 'settle') renderSettle();
-    });
-    storeSettingsRef.child('fee_rates').on('value', snap => {
-      const d = snap.val();
-      if (d) feeRates = d;
-      if (activeTab === 'settle') renderSettle();
-    });
-    storeSettingsRef.child('ref_items').on('value', snap => {
-      const d = snap.val();
-      if (d) refItems = { trade: d.trade || 0, costco: d.costco || 0 };
-      if (activeTab === 'settle') renderSettle();
-    });
-    // ê²°ì œìˆ˜ë‹¨ë³„ ì›”ë§¤ì¶œ â€” ì›” ë°”ë€” ë•Œë§ˆë‹¤ ë¡œë“œ
-    loadPayTotals(db, storeCode);
-
-  } catch(e) {
-    console.warn('Firebase init error:', e);
-    setSyncDot(false);
-  }
-
-  render(); // initial empty render
-})();
-
-/* â•â•â•â•â•â•â•â•â•â•â• SYNC DOT â•â•â•â•â•â•â•â•â•â•â• */
-function setSyncDot(ok) {
-  document.getElementById('syncDot').className = 'sync-dot' + (ok ? '' : ' off');
-}
-
-/* â•â•â•â•â•â•â•â•â•â•â• EXCEL UPLOAD â•â•â•â•â•â•â•â•â•â•â• */
-document.getElementById('fileIn').addEventListener('change', function(e) {
-  const files = Array.from(e.target.files);
-  if (!files.length) return;
-
-  let pending = files.length;
-  let incoming = [];
-
-  files.forEach(file => {
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: true });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-
-      rows.forEach(row => {
-        // ë‚ ì§œ ì»¬ëŸ¼
-        const rawDate = row['ì£¼ë¬¸ê¸°ì¤€ì¼ìž'] || row['ë‚ ì§œ'] || row['ì£¼ë¬¸ì¼'] || '';
-        let dateStr = '';
-        if (rawDate instanceof Date) {
-          dateStr = rawDate.toISOString().slice(0, 10);
-        } else {
-          dateStr = String(rawDate).trim().slice(0, 10);
-        }
-
-        // ì œí’ˆëª…
-        const name = String(row['ìƒí’ˆëª…'] || row['ì œí’ˆëª…'] || '').trim();
-
-        // ìˆ˜ëŸ‰
-        const qty = Math.max(1, parseInt(row['ìˆ˜ëŸ‰'] || 1) || 1);
-
-        // íŒë§¤ê¸ˆì•¡ â€” ì»¬ëŸ¼ëª…ì— ì¤„ë°”ê¿ˆ í¬í•¨ë  ìˆ˜ ìžˆìœ¼ë¯€ë¡œ ëª¨ë“  í‚¤ë¥¼ íƒìƒ‰
-        // ë§ˆì´ë„ˆìŠ¤ ë¶€í˜¸ ë³´ì¡´ (í™˜ë¶ˆ/ì·¨ì†Œ í–‰ ì²˜ë¦¬)
-        let salePrice = 0;
-        for (const k of Object.keys(row)) {
-          if (k.includes('ì‹¤íŒë§¤ê¸ˆì•¡') || k.includes('íŒë§¤ê¸ˆì•¡') || k.includes('ê¸ˆì•¡')) {
-            const raw  = String(row[k]).trim();
-            const sign = raw.startsWith('-') ? -1 : 1;
-            const v    = raw.replace(/[^\d]/g, '');
-            if (v) { salePrice = sign * (parseInt(v) || 0); break; }
-          }
-        }
-
-        if (dateStr && name && salePrice !== 0) {
-          incoming.push({ date: dateStr, name, qty, salePrice, cost: 0, margin: salePrice, matched: false, source: 'pos' });
-        }
-      });
-
-      pending--;
-      if (pending === 0) finalize(incoming);
-    };
-    reader.readAsArrayBuffer(file);
-  });
-
-  this.value = '';
-});
-
-function finalize(incoming) {
-  // Dedup: date+name+qty+salePrice key
-  const existing = new Set(posRows.map(r => `${r.date}|${r.name}|${r.qty}|${r.salePrice}`));
-  const added = incoming.filter(r => !existing.has(`${r.date}|${r.name}|${r.qty}|${r.salePrice}`));
-  posRows = [...posRows, ...added];
-
-  const el = document.getElementById('posStatus');
-  el.textContent = `âœ… ${posRows.length}ê±´ ë¡œë“œë¨ (${added.length}ê±´ ì¶”ê°€)`;
-  el.className = 'pos-status ok';
-
-  matchCosts();
-}
-
-/* â•â•â•â•â•â•â•â•â•â•â• COST MATCHING â•â•â•â•â•â•â•â•â•â•â• */
-
-// ì™€ì¸ëª… í•œê¸€ í‘œê¸° í†µì¼ (ê°™ì€ í’ˆì¢…ì˜ ë‹¤ë¥¸ í‘œê¸° â†’ ë™ì¼í•˜ê²Œ)
-function normSynonyms(s) {
-  return s
-    .replace(/ìƒ¤ë„ë„¤ì´/g,  'ìƒ¤ë¥´ë„ë„¤')  // Chardonnay: ìƒ¤ë„ë„¤ì´ â†’ ìƒ¤ë¥´ë„ë„¤
-    .replace(/ìƒ¤ë„ë„¤/g,    'ìƒ¤ë¥´ë„ë„¤')  // ìƒ¤ë„ë„¤ â†’ ìƒ¤ë¥´ë„ë„¤
-    .replace(/ê¹Œë² ë¥´ë„¤/g,  'ì¹´ë² ë¥´ë„¤')  // Cabernet: ê¹Œ â†’ ì¹´
-    .replace(/ê¹Œì‡¼/g,      'ì¹´ì‡¼')     // Cashew ì‹ í‘œê¸°
-    .replace(/ì‚ë…¸/g,      'í”¼ë…¸')     // Pinot: ì‚ë…¸ â†’ í”¼ë…¸
-    .replace(/ë®¤ìŠ¤ìº£/g,    'ë®ˆìŠ¤ì¹´')   // Muscat
-    .replace(/ë®¤ìŠ¤ì¹´/g,    'ë®ˆìŠ¤ì¹´');
-}
-
-// Firebase keyë¡œ ì‚¬ìš© ê°€ëŠ¥í•œ ì•ˆì „í•œ í‚¤ ìƒì„± (. / [ ] # $ ì œê±°)
-function customCostKey(posName) {
-  return normName(posName)
-    .replace(/[./#[\]$]/g, '')
-    .replace(/\s+/g, '_')
-    .slice(0, 120);              // Firebase key ìµœëŒ€ ê¸¸ì´ ì œí•œ
-}
-
-// ì œí’ˆëª… ì •ê·œí™”: ì†Œë¬¸ìž, ê³µë°± ì •ë¦¬, [ì ‘ë‘ì‚¬] ì œê±°
-function normName(s) {
-  return normSynonyms(
-    s.trim()
-      .toLowerCase()
-      .replace(/\[.*?\]\s*/g, '')   // [gift set], [ë‹¨í’ˆ] ë“± ì œê±°
-      .replace(/\//g, ' ')          // ìŠ¬ëž˜ì‹œ â†’ ê³µë°± (ë”¸ê¸°/ì‚´êµ¬/ì´ˆì½” ì²˜ë¦¬)
-      .replace(/,\s*/g, ' ')        // ì‰¼í‘œ â†’ ê³µë°± (ë¹„ë„¤ë¡± ë“œ ë·•ì‹œ, ê¼¬ëœ¨... ì²˜ë¦¬)
-      .replace(/\s+/g, ' ')
-      .trim()
-  );
-}
-
-// ìš©ëŸ‰ í‘œê¸° ì œê±° (750ml, 50ml, ë¯¸ë‹ˆ ë“±) â€” ì•„êµ¬ì•„ 50ml â†” ì•„êµ¬ì•„ ë¯¸ë‹ˆ ë§¤ì¹­ìš©
-function stripSize(s) {
-  return s
-    .replace(/\b\d+\s*ml\b/gi, '')  // 750ml, 375ml, 50ml
-    .replace(/\b\d+\s*cl\b/gi, '')  // 75cl
-    .replace(/\bë¯¸ë‹ˆ\b/g, '')
-    .replace(/\bë¼ì§€\b/g, '')
-    .replace(/\bìŠ¤ëª°\b/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// ë¹ˆí‹°ì§€ ì—°ë„ ì œê±° ('22, 2022, ,2019 ë“±)
-function stripYear(s) {
-  return s
-    .replace(/,?\s*'?\d{4}$/,  '')   // ëì˜ 2022, '22 ë“±
-    .replace(/,?\s*20\d{2}$/,  '')   // ëì˜ 2022 í˜•ì‹
-    .replace(/\s+'?\d{2}$/,    '')   // ëì˜ '22 í˜•ì‹
-    .replace(/\s+\d{4}\b/g,    '')   // ì¤‘ê°„ì˜ 2022 í˜•ì‹
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// ê°€ê²©Â·ë¹„ì œí’ˆ í–‰ì¸ì§€ í™•ì¸ (1,000 / ë¬¼í’ˆ ë“±)
-function isNonProduct(name) {
-  const t = name.trim();
-  if (/^[\d,]+$/.test(t)) return true;  // ê°€ê²©ë§Œ: 1,000 / 5,000
-  if (t === 'ë¬¼í’ˆ') return true;          // ë¹„í’ˆ
-  return false;
-  // â€» ml í¬í•¨ í•­ëª©(ë´„ë² ì´ 750ml, ìž­ë‹¤ë‹ˆì—˜ 375ml ë“±)ì€ ì •í’ˆì´ë¯€ë¡œ í•„í„° ì œê±°
-}
-
-// íŽ¸ì§‘ ê±°ë¦¬ ìœ ì‚¬ë„ (ì˜¤íƒ€ ë³´ì •ìš© â€” í´â†”í¬, ìŠ¤â†”ì¦ˆ ë“± 1~2ìž ì°¨ì´ ì²˜ë¦¬, 0~1)
-function editSim(a, b) {
-  if (!a || !b) return 0;
-  const m = a.length, n = b.length;
-  if (Math.abs(m - n) > 3) return 0; // ê¸¸ì´ ì°¨ ë„ˆë¬´ í¬ë©´ ìŠ¤í‚µ
-  const prev = Array.from({length: n + 1}, (_, i) => i);
-  const cur  = Array(n + 1).fill(0);
-  for (let i = 1; i <= m; i++) {
-    cur[0] = i;
-    for (let j = 1; j <= n; j++) {
-      cur[j] = a[i-1] === b[j-1] ? prev[j-1]
-             : 1 + Math.min(prev[j], cur[j-1], prev[j-1]);
-    }
-    prev.splice(0, n + 1, ...cur);
-  }
-  return 1 - prev[n] / Math.max(m, n);
-}
-
-// ìŠ¤ë§ˆíŠ¸ ì œí’ˆ íƒìƒ‰
-function findProductSmart(posName) {
-  if (isNonProduct(posName)) return null;
-
-  const norm = normName(posName);
-  const normNoYear = stripYear(norm);
-
-  // 1ë‹¨ê³„: ì •í™•ížˆ ì¼ì¹˜
-  for (const p of products) {
-    if (normName(p.name) === norm) return p;
-  }
-
-  // 1.5ë‹¨ê³„: ë„ì–´ì“°ê¸° ë¬´ì‹œ í›„ ì¼ì¹˜
-  // ì˜ˆ) POS "íŽ˜í¼ìž­" â†” Firebase "íŽ˜í¼ ìž­" / POS "ìŠ¤í† ë‹ˆë¦¬ë²„" â†” Firebase "ìŠ¤í† ë‹ˆ ë¦¬ë²„"
-  const normNoSp = norm.replace(/\s/g, '');
-  const normNoYearNoSp = normNoYear.replace(/\s/g, '');
-  for (const p of products) {
-    const pn = normName(p.name);
-    const pnNoSp = pn.replace(/\s/g, '');
-    const pnNoYearNoSp = stripYear(pn).replace(/\s/g, '');
-    if (pnNoSp === normNoSp) return p;
-    if (pnNoYearNoSp === normNoYearNoSp && normNoYearNoSp.length > 2) return p;
-  }
-
-  // 1.7ë‹¨ê³„: ì•žë¶€ë¶„ ì¼ì¹˜ (POS ì´ë¦„ì´ Firebase ì´ë¦„ì˜ ì‹œìž‘ ë¶€ë¶„ì¼ ë•Œ)
-  // ì˜ˆ) "ì°°ìŠ¤í•˜ì´ì§" â†’ "ì°°ìŠ¤í•˜ì´ì§ë¦¬ì €ë¸Œë¸Œë¤¼" ì•žë¶€ë¶„ í¬í•¨
-  if (normNoSp.length >= 4) {
-    for (const p of products) {
-      const pnNoSp = normName(p.name).replace(/\s/g, '');
-      if (pnNoSp.startsWith(normNoSp)) return p;
-    }
-  }
-  if (normNoYearNoSp.length >= 4) {
-    for (const p of products) {
-      const pnNoYearNoSp = stripYear(normName(p.name)).replace(/\s/g, '');
-      if (pnNoYearNoSp.startsWith(normNoYearNoSp)) return p;
-    }
-  }
-
-  // 2ë‹¨ê³„: ë¹ˆí‹°ì§€ ì œê±° í›„ ì¼ì¹˜
-  for (const p of products) {
-    const pn = normName(p.name);
-    if (stripYear(pn) === normNoYear && normNoYear.length > 2) return p;
-  }
-
-  // 2.5ë‹¨ê³„: ìš©ëŸ‰ í‘œê¸° ì œê±° í›„ ì¼ì¹˜ (ì•„êµ¬ì•„ 50ml â†” ì•„êµ¬ì•„ ë¯¸ë‹ˆ)
-  const normSz    = stripSize(norm);
-  const normSzNY  = stripSize(normNoYear);
-  if (normSz.length >= 2) {
-    for (const p of products) {
-      const pn   = normName(p.name);
-      const pnSz = stripSize(pn);
-      if (pnSz === normSz) return p;
-      if (normSzNY.length >= 2 && stripSize(stripYear(pn)) === normSzNY) return p;
-    }
-  }
-
-  // 3ë‹¨ê³„: í¬í•¨ ê´€ê³„ (í•œê¸€ì€ 2ê¸€ìž ì´ìƒì´ë©´ ìœ íš¨)
-  for (const p of products) {
-    const pn = normName(p.name);
-    const pnNoYear = stripYear(pn);
-    if (norm.length >= 2 && (pn.includes(norm) || norm.includes(pn))) return p;
-    if (normNoYear.length >= 2 && (pnNoYear.includes(normNoYear) || normNoYear.includes(pnNoYear))) return p;
-  }
-
-  // 4ë‹¨ê³„: POSì˜ ëª¨ë“  ë‹¨ì–´ê°€ Firebase ì´ë¦„ ì•ˆì— í¬í•¨ (ë˜ëŠ” ì—­ë°©í–¥)
-  // ì˜ˆ) "ìŠ¤í† ë‹ˆ ë¦¬ë²„" â†’ "ìŠ¤í† ë‹ˆ ë¦¬ë²„ ê¹Œë² ë¥´ë„¤ ì†Œë¹„ë‡½ '22" / "ì•„ë§ˆë¡œë„¤ ë°œí´ë¦¬ì²¼ë¼" â†’ "ê¼°ë–¼ â€¦ ì•„ë§ˆë¡œë„¤ â€¦ ë°œí´ë¦¬ì²¼ë¼"
-  const posWords = norm.split(' ').filter(w => w.length >= 2);
-  if (posWords.length > 0) {
-    for (const p of products) {
-      const pn = normName(p.name);
-      if (posWords.every(w => pn.includes(w))) return p;  // POS ë‹¨ì–´ ëª¨ë‘ FBì— í¬í•¨
-    }
-    for (const p of products) {
-      const pnNoYear = stripYear(normName(p.name));
-      if (posWords.every(w => pnNoYear.includes(w))) return p;
-    }
-    // ì—­ë°©í–¥: Firebaseì˜ ëª¨ë“  ë‹¨ì–´ê°€ POS ì´ë¦„ ì•ˆì— í¬í•¨ (ì§§ì€ FB ì´ë¦„ â†’ ê¸´ POS ì´ë¦„)
-    for (const p of products) {
-      const fbWords = normName(p.name).split(' ').filter(w => w.length >= 2);
-      if (fbWords.length >= 2 && fbWords.every(w => norm.includes(w))) return p;
-    }
-    for (const p of products) {
-      const fbWords = stripYear(normName(p.name)).split(' ').filter(w => w.length >= 2);
-      if (fbWords.length >= 2 && fbWords.every(w => normNoYear.includes(w))) return p;
-    }
-  }
-
-  // 5ë‹¨ê³„: ë‹¨ì–´ ê²¹ì¹¨ ë¹„ìœ¨ (4ë‹¨ì–´ ì´ìƒ ê¸´ ì´ë¦„ì€ 0.5, ë‚˜ë¨¸ì§€ 0.6)
-  if (posWords.length === 0) return null;
-  const posSet = new Set(posWords);
-  const longName = posWords.length >= 4;
-
-  let best = null, bestScore = 0;
-  for (const p of products) {
-    const pWords = normName(p.name).split(' ').filter(w => w.length >= 2);
-    const overlap = pWords.filter(w => posSet.has(w)).length;
-    const score = overlap / Math.max(posSet.size, pWords.length);
-    const threshold = longName ? 0.5 : 0.6;
-    if (score > bestScore && score >= threshold) {
-      bestScore = score; best = p;
-    }
-  }
-  if (best) return best;
-
-  // 6ë‹¨ê³„: íŽ¸ì§‘ ê±°ë¦¬ ìœ ì‚¬ë„ (ì˜¤íƒ€ ë³´ì • â€” í´â†”í¬, ìŠ¤â†”ì¦ˆ ë“± 1~2ìž ì°¨ì´)
-  // ê³µë°± ì œê±° í›„ ìœ ì‚¬ë„ â‰¥0.78 ì´ë©´ ë§¤ì¹­
-  let bestSim = null, bestSimScore = 0;
-  for (const p of products) {
-    const pnNS = normName(p.name).replace(/\s/g, '');
-    const s1 = editSim(normNoSp, pnNS);
-    if (s1 > bestSimScore && s1 >= 0.78) { bestSimScore = s1; bestSim = p; }
-    const pnNYNS = stripYear(normName(p.name)).replace(/\s/g, '');
-    const s2 = editSim(normNoYearNoSp, pnNYNS);
-    if (s2 > bestSimScore && s2 >= 0.78) { bestSimScore = s2; bestSim = p; }
-  }
-  return bestSim;
-}
-
-/* â•â•â•â•â•â•â•â•â•â•â• SETTLE â€” Firebase ì €ìž¥ í•¨ìˆ˜ë“¤ â•â•â•â•â•â•â•â•â•â•â• */
-
-function loadPayTotals(db, storeCode) {
-  if (!db) return;
-  const safeMonth = filterMonth.replace('-', '_');
-  db.ref('store_settings/' + storeCode + '/pay_totals/' + safeMonth)
-    .once('value').then(snap => {
-      const d = snap.val();
-      if (d) payTotals = d;
-      if (activeTab === 'settle') renderSettle();
-    });
-}
-
-function savePayTotals() {
-  try {
-    const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-    const safeMonth = filterMonth.replace('-', '_');
-    firebase.database()
-      .ref('store_settings/' + storeCode + '/pay_totals/' + safeMonth)
-      .set(payTotals);
-  } catch(e) {}
-}
-
-function saveFeeRates() {
-  try {
-    const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-    firebase.database()
-      .ref('store_settings/' + storeCode + '/fee_rates')
-      .set(feeRates);
-  } catch(e) {}
-}
-
-function addExpense() {
-  const id = 'exp_' + Date.now();
-  const name = prompt('ì§€ì¶œ í•­ëª©ëª…ì„ ìž…ë ¥í•˜ì„¸ìš” (ì˜ˆ: ìž„ëŒ€ë£Œ, ì¸ê±´ë¹„)', '');
-  if (!name) return;
-  const amtStr = prompt(name + ' ì›” ê¸ˆì•¡ (ì›)?', '0');
-  const amount = parseInt(String(amtStr).replace(/[^\d]/g, '')) || 0;
-  try {
-    const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-    firebase.database()
-      .ref('store_settings/' + storeCode + '/fixed_expenses/' + id)
-      .set({ name, amount, order: Date.now() });
-  } catch(e) {}
-}
-
-function deleteExpense(id) {
-  if (!confirm('ì´ í•­ëª©ì„ ì‚­ì œí• ê¹Œìš”?')) return;
-  try {
-    const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-    firebase.database()
-      .ref('store_settings/' + storeCode + '/fixed_expenses/' + id)
-      .remove();
-  } catch(e) {}
-}
-
-function updateExpenseAmount(id, val) {
-  const amount = parseInt(String(val).replace(/[^\d]/g, '')) || 0;
-  try {
-    const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-    firebase.database()
-      .ref('store_settings/' + storeCode + '/fixed_expenses/' + id + '/amount')
-      .set(amount);
-  } catch(e) {}
-}
-
-function saveRefItems() {
-  try {
-    const storeCode = localStorage.getItem('ws_store_code') || 'store1';
-    firebase.database()
-      .ref('store_settings/' + storeCode + '/ref_items')
-      .set(refItems);
-  } catch(e) {}
-}
-
-/* â”€â”€ ì •ì‚° íƒ­ ë Œë” â”€â”€ */
-function renderSettle() {
-  const panel = document.getElementById('panel-settle');
-  const rows  = getRows();
-  const totalRevenue = rows.reduce((s, r) => s + (r.salePrice || 0), 0);
-  const totalMargin  = rows.reduce((s, r) => s + (r.margin   || 0), 0);
-
-  // ìˆ˜ìˆ˜ë£Œ ê³„ì‚°
-  const cardFee = Math.round(payTotals.card * feeRates.card / 100);
-  const easyFee = Math.round(payTotals.easy * feeRates.easy / 100);
-  const totalFees = cardFee + easyFee;
-
-  // ê³ ì •ì§€ì¶œ
-  const expList = Object.entries(fixedExpenses)
-    .sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
-  const totalFixed = expList.reduce((s, [, e]) => s + (e.amount || 0), 0);
-
-  // ìˆœìˆ˜ìµ (ìˆ˜ìˆ˜ë£Œ + ê³ ì •ì§€ì¶œ í•©ì‚°)
-  const totalDeductions = totalFees + totalFixed;
-  const netProfit = totalMargin - totalDeductions;
-
-  const feeRows = [
-    { key: 'card', label: 'ðŸ’³ ì¹´ë“œ', rateKey: 'card', val: payTotals.card, fee: cardFee },
-    { key: 'easy', label: 'ðŸ“± ê°„íŽ¸ê²°ì œ', rateKey: 'easy', val: payTotals.easy, fee: easyFee },
-  ];
-
-  const feeRowsHtml = feeRows.map(f => `
-    <div class="fee-row">
-      <span class="fee-label">${f.label}</span>
-      <input class="settle-input" type="number" min="0" step="1000"
-             value="${f.val || ''}" placeholder="ë§¤ì¶œì•¡ (ì›)"
-             onchange="payTotals.${f.key}=parseInt(this.value.replace(/[^\\d]/g,''))||0; savePayTotals(); renderSettle()">
-      <span class="fee-arrow">Ã— </span>
-      <input class="settle-input settle-input-rate" type="number" min="0" max="10" step="0.1"
-             value="${feeRates[f.rateKey]}"
-             onchange="feeRates.${f.rateKey}=parseFloat(this.value)||0; saveFeeRates(); renderSettle()">
-      <span class="fee-arrow">%</span>
-      <span class="fee-result">= ${won(f.fee)}</span>
-    </div>`).join('') + `
-    <div class="fee-row" style="opacity:.85">
-      <span class="fee-label">ðŸ§¾ í˜„ê¸ˆì˜ìˆ˜ì¦</span>
-      <input class="settle-input" type="number" min="0" step="1000"
-             value="${payTotals.cashReceipt || ''}" placeholder="ê¸ˆì•¡ (ì›)"
-             onchange="payTotals.cashReceipt=parseInt(this.value.replace(/[^\\d]/g,''))||0; savePayTotals();">
-      <span class="fee-arrow" style="font-size:11px;color:var(--text-3)">ìˆ˜ìˆ˜ë£Œ ì—†ìŒ</span>
-    </div>`;
-
-  const expRowsHtml = expList.map(([id, e]) => `
-    <div class="expense-row">
-      <span class="expense-name" style="font-size:13px">${e.name}</span>
-      <input class="settle-input" type="number" min="0" step="10000"
-             value="${e.amount || ''}" placeholder="ê¸ˆì•¡ (ì›)"
-             onchange="updateExpenseAmount('${id}', this.value)">
-      <button class="expense-del" onclick="deleteExpense('${id}')" title="ì‚­ì œ">Ã—</button>
-    </div>`).join('');
-
-  // ìˆ˜ìˆ˜ë£Œë¥¼ ê³ ì •ì§€ì¶œ ì„¹ì…˜ ì•ˆì— ìžë™ í•­ëª©ìœ¼ë¡œ í‘œì‹œ
-  const autoFeeRowsHtml = [
-    { label: 'ðŸ’³ ì¹´ë“œ ìˆ˜ìˆ˜ë£Œ', fee: cardFee },
-    { label: 'ðŸ“± ê°„íŽ¸ê²°ì œ ìˆ˜ìˆ˜ë£Œ', fee: easyFee },
-  ].filter(f => f.fee > 0).map(f => `
-    <div class="expense-row" style="opacity:.75">
-      <span class="expense-name" style="font-size:13px;color:var(--text-2)">${f.label} <span style="font-size:11px;color:var(--text-3)">(ìžë™)</span></span>
-      <span style="font-size:13px;font-weight:500;color:var(--warn)">${won(f.fee)}</span>
-    </div>`).join('');
-
-  panel.innerHTML = `
-    <div class="net-box">
-      <div class="net-box-label">ì´ë‹¬ ìˆœìˆ˜ìµ (${filterMonth})</div>
-      <div class="net-box-formula">
-        ì´ ë§ˆì§„ ${won(totalMargin)}<br>
-        âˆ’ ê³ ì •ì§€ì¶œ í•©ê³„ ${won(totalDeductions)}
-      </div>
-      <div class="net-box-val${netProfit < 0 ? ' neg' : ''}">${won(netProfit)}</div>
-    </div>
-
-    <div class="settle-section">
-      <div class="settle-title">ðŸ’³ ê²°ì œìˆ˜ë‹¨ë³„ ìˆ˜ìˆ˜ë£Œ ì •ì‚°</div>
-      ${feeRowsHtml}
-      <div class="settle-sub">ìˆ˜ìˆ˜ë£Œ í•©ê³„ <span class="sub-val">${won(totalFees)}</span></div>
-    </div>
-
-    <div class="settle-section">
-      <div class="settle-title">ðŸ  ê³ ì •ì§€ì¶œ</div>
-      ${autoFeeRowsHtml}
-      ${expRowsHtml || (!autoFeeRowsHtml ? '<p style="font-size:12px;color:var(--text-3);padding:8px 0">ì•„ì§ í•­ëª©ì´ ì—†ì–´ìš”</p>' : '')}
-      <button class="add-expense-btn" onclick="addExpense()">+ í•­ëª© ì¶”ê°€</button>
-      <div class="settle-sub">ê³ ì •ì§€ì¶œ í•©ê³„ <span class="sub-val">${won(totalDeductions)}</span></div>
-    </div>
-
-    <div class="settle-section" style="font-size:12px;color:var(--text-2);line-height:1.8">
-      <div class="settle-title">ðŸ“Š ë§¤ì¶œ ìš”ì•½</div>
-      <div style="display:flex;justify-content:space-between"><span>ì´ ë§¤ì¶œ</span><b style="color:var(--text)">${won(totalRevenue)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span>ì´ ì›ê°€</span><b style="color:var(--text)">${won(totalRevenue - totalMargin)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span>ì´ ë§ˆì§„</span><b style="color:var(--success)">${won(totalMargin)}</b></div>
-    </div>
-
-    <div class="settle-section">
-      <div class="settle-title" style="display:flex;align-items:center;gap:8px">
-        ðŸ“‹ ì°¸ê³  í•­ëª©
-        <span style="font-size:11px;font-weight:400;color:var(--text-3);background:var(--surface-2);padding:2px 8px;border-radius:20px">ìˆœìˆ˜ìµ ê³„ì‚° ë¯¸í¬í•¨</span>
-      </div>
-      <p style="font-size:11px;color:var(--text-3);margin-bottom:10px">ê¸ˆì•¡ì„ ê¸°ë¡í•´ë‘ëŠ” ìš©ë„ë¡œë§Œ ì‚¬ìš©í•´ìš”.</p>
-      <div class="fee-row">
-        <span class="fee-label">ðŸ·ï¸ ë§¤ë§¤ëŒ€ê¸ˆ</span>
-        <input class="settle-input" type="number" min="0" step="10000"
-               value="${refItems.trade || ''}" placeholder="ê¸ˆì•¡ (ì›)"
-               onchange="refItems.trade=parseInt(this.value.replace(/[^\\d]/g,''))||0; saveRefItems()">
-        <span class="fee-arrow" style="color:var(--text-3);font-size:12px">${refItems.trade ? won(refItems.trade) : ''}</span>
-      </div>
-      <div class="fee-row">
-        <span class="fee-label">ðŸ›’ ì½”ìŠ¤íŠ¸ì½” ê¸ˆì•¡</span>
-        <input class="settle-input" type="number" min="0" step="10000"
-               value="${refItems.costco || ''}" placeholder="ê¸ˆì•¡ (ì›)"
-               onchange="refItems.costco=parseInt(this.value.replace(/[^\\d]/g,''))||0; saveRefItems()">
-        <span class="fee-arrow" style="color:var(--text-3);font-size:12px">${refItems.costco ? won(refItems.costco) : ''}</span>
-      </div>
-      ${(refItems.trade || refItems.costco) ? `
-      <div class="settle-sub" style="color:var(--text-2)">
-        ì°¸ê³  í•©ê³„ <span style="color:var(--text)">${won((refItems.trade||0) + (refItems.costco||0))}</span>
-      </div>` : ''}
-    </div>
-  `;
-}
-
-// ì‚¬ìš©ìž ìž…ë ¥ ì›ê°€ë¥¼ Firebaseì— ì €ìž¥
-function saveCustomCost(posName, inputEl, savedEl) {
-  const cost = parseInt(String(inputEl.value).replace(/[^\d]/g, '')) || 0;
-  const key  = customCostKey(posName);
-  try {
-    firebase.database().ref('pos_custom_costs/' + key).set(cost)
-      .then(() => {
-        if (savedEl) {
-          savedEl.style.display = 'inline';
-          setTimeout(() => { savedEl.style.display = 'none'; }, 2500);
-        }
-        // customCosts listenerê°€ ìžë™ìœ¼ë¡œ matchCosts() ìž¬ì‹¤í–‰
-      })
-      .catch(err => alert('ì €ìž¥ ì‹¤íŒ¨: ' + err.message));
-  } catch(e) {
-    console.warn('saveCustomCost error:', e);
-  }
-}
-
-// ê°€ê²©í‘œ ìˆ˜ë™ ìƒˆë¡œê³ ì¹¨ (Firebaseì—ì„œ ìµœì‹  ì›ê°€ ë‹¤ì‹œ ë¶ˆëŸ¬ì™€ ìž¬ê³„ì‚°)
-function refreshProducts() {
-  const btn = document.getElementById('refreshBtn');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = 'â³ ë¶ˆëŸ¬ì˜¤ëŠ” ì¤‘...';
-  try {
-    const db = firebase.database();
-    db.ref('products').once('value').then(snap => {
-      const d = snap.val();
-      if (d && d.list && d.list.length) {
-        products = d.list;
-        if (posRows.length) matchCosts();
-        btn.textContent = 'âœ“ ì—…ë°ì´íŠ¸ ì™„ë£Œ';
-        setTimeout(() => { btn.textContent = 'â†» ì›ê°€ ìƒˆë¡œê³ ì¹¨'; btn.disabled = false; }, 2000);
-      } else {
-        btn.textContent = 'â†» ì›ê°€ ìƒˆë¡œê³ ì¹¨'; btn.disabled = false;
-      }
-    }).catch(() => { btn.textContent = 'â†» ì›ê°€ ìƒˆë¡œê³ ì¹¨'; btn.disabled = false; });
-  } catch(e) {
-    btn.textContent = 'â†» ì›ê°€ ìƒˆë¡œê³ ì¹¨'; btn.disabled = false;
-  }
-}
-
-function matchCosts() {
-  unmatchedSet.clear();
-
-  posRows.forEach(r => {
-    // ë¹„ì œí’ˆ í–‰ì€ ê±´ë„ˆëœ€ (ê°€ê²©, ë¬¼í’ˆ ë“±)
-    if (isNonProduct(r.name)) {
-      r.cost = 0; r.margin = r.salePrice; r.matched = true; r.isPrice = true;
-      return;
-    }
-
-    // â‘  ì‚¬ìš©ìžê°€ ì§ì ‘ ìž…ë ¥í•œ ì›ê°€ ìš°ì„  ì ìš©
-    const key = customCostKey(r.name);
-    if (customCosts[key] !== undefined) {
-      r.cost       = customCosts[key] * r.qty;
-      r.margin     = r.salePrice - r.cost;
-      r.matched    = true;
-      r.isCustom   = true;
-      r.matchedName = null;
-      return;
-    }
-
-    // â‘¡ ì•Œê³ ë¦¬ì¦˜ ìžë™ ë§¤ì¹­
-    const p = findProductSmart(r.name);
-    if (p) {
-      r.cost      = (p.cost || 0) * r.qty;
-      r.margin    = r.salePrice - r.cost;
-      r.matched   = true;
-      r.isCustom  = false;
-      r.matchedName = p.name;
-    } else {
-      r.cost      = 0;
-      r.margin    = r.salePrice;
-      r.matched   = false;
-      r.isCustom  = false;
-      unmatchedSet.add(r.name);
-    }
-  });
-
-  render();
-}
-
-/* â•â•â•â•â•â•â•â•â•â•â• FILTERED DATA â•â•â•â•â•â•â•â•â•â•â• */
-function getRows() {
-  const m = filterMonth;
-
-  const pos = posRows.filter(r => r.date.startsWith(m));
-
-  // Flatten cash sales â†’ item-level rows
-  const cashItems = [];
-  cashRaw
-    .filter(s => s.date && s.date.startsWith(m))
-    .forEach(sale => {
-      const items    = sale.items || [];
-      const discount = sale.discount || 0;
-      const subTotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 1), 0);
-
-      items.forEach(item => {
-        const raw     = (item.price || 0) * (item.qty || 1);
-        const disc    = subTotal > 0 ? Math.round(discount * raw / subTotal) : 0;
-        const revenue = Math.max(0, raw - disc);
-        const cost    = (item.cost || 0) * (item.qty || 1);
-        cashItems.push({
-          date:      sale.date,
-          name:      item.name,
-          qty:       item.qty || 1,
-          salePrice: revenue,
-          cost,
-          margin:    revenue - cost,
-          matched:   true,
-          source:    'cash',
-          pay:       sale.pay,
-          bank:      sale.bank || ''
-        });
-      });
-    });
-
-  if (activeSource === 'pos')  return pos;
-  if (activeSource === 'cash') return cashItems;
-  return [...pos, ...cashItems];
-}
-
-/* â•â•â•â•â•â•â•â•â•â•â• HELPERS â•â•â•â•â•â•â•â•â•â•â• */
-const won = n => 'â‚©' + Math.round(n || 0).toLocaleString('ko-KR');
-const pct = (a, b) => b > 0 ? ((a / b) * 100).toFixed(1) + '%' : 'â€”';
-
-/* â•â•â•â•â•â•â•â•â•â•â• RENDER â•â•â•â•â•â•â•â•â•â•â• */
-function render() {
-  const rows = getRows();
-  renderStats(rows);
-  if      (activeTab === 'date')    renderDate(rows);
-  else if (activeTab === 'product') renderProduct(rows);
-  else if (activeTab === 'settle')  renderSettle();
-  else                              renderDetail(rows);
-}
-
-/* â”€â”€ Stats â”€â”€ */
-function renderStats(rows) {
-  const total  = rows.reduce((s, r) => s + (r.salePrice || 0), 0);
-  const cost   = rows.reduce((s, r) => s + (r.cost   || 0), 0);
-  const margin = rows.reduce((s, r) => s + (r.margin || 0), 0);
-  const rate   = total > 0 ? (margin / total * 100) : 0;
-
-  document.getElementById('st-total') .textContent = total  ? won(total)  : 'â€”';
-  document.getElementById('st-cost')  .textContent = cost   ? won(cost)   : 'â€”';
-  document.getElementById('st-margin').textContent = margin ? won(margin) : 'â€”';
-  document.getElementById('st-rate')  .textContent = total  ? rate.toFixed(1) + '%' : 'â€”';
-  document.getElementById('rateBar').style.width = Math.min(100, rate) + '%';
-}
-
-/* â”€â”€ Date view â”€â”€ */
-function renderDate(rows) {
-  const panel = document.getElementById('panel-date');
-  if (!rows.length) { panel.innerHTML = emptyHtml(); return; }
-
-  const map = {};
-  rows.forEach(r => {
-    if (!map[r.date]) map[r.date] = { total: 0, cost: 0, margin: 0, cnt: 0 };
-    const d = map[r.date];
-    d.total  += r.salePrice; d.cost += r.cost; d.margin += r.margin; d.cnt++;
-  });
-
-  const dates  = Object.keys(map).sort().reverse();
-  const maxRate = Math.max(...dates.map(d => map[d].total > 0 ? map[d].margin / map[d].total : 0), .001);
-
-  const warn = buildWarnBanner();
-
-  const body = dates.map(d => {
-    const v = map[d];
-    const rate  = v.total > 0 ? v.margin / v.total : 0;
-    const barW  = ((rate / maxRate) * 100).toFixed(0);
-    const dow   = ['ì¼','ì›”','í™”','ìˆ˜','ëª©','ê¸ˆ','í† '][new Date(d).getDay()];
-    return `<tr>
-      <td><b>${d}</b> <span class="col-muted">(${dow})</span></td>
-      <td class="hide-xs">${v.cnt}</td>
-      <td>${won(v.total)}</td>
-      <td class="hide-xs">${won(v.cost)}</td>
-      <td class="col-green">${won(v.margin)}</td>
-      <td>
-        <div class="mbar-cell">
-          ${pct(v.margin, v.total)}
-          <div class="mbar"><div class="mbar-fill" style="width:${barW}%"></div></div>
-        </div>
-      </td>
-    </tr>`;
-  }).join('');
-
-  const tt = rows.reduce((s,r)=>s+r.salePrice,0);
-  const tc = rows.reduce((s,r)=>s+r.cost,0);
-  const tm = rows.reduce((s,r)=>s+r.margin,0);
-
-  panel.innerHTML = warn + `<div class="tbl-wrap"><table class="tbl">
-    <thead><tr>
-      <th>ë‚ ì§œ</th><th class="hide-xs">ê±´ìˆ˜</th>
-      <th>ë§¤ì¶œ</th><th class="hide-xs">ì›ê°€</th>
-      <th>ë§ˆì§„</th><th>ë§ˆì§„ìœ¨</th>
-    </tr></thead>
-    <tbody>${body}</tbody>
-    <tfoot><tr class="total-row">
-      <td>í•©ê³„</td>
-      <td class="hide-xs">${rows.length}</td>
-      <td>${won(tt)}</td><td class="hide-xs">${won(tc)}</td>
-      <td class="col-green">${won(tm)}</td>
-      <td>${pct(tm,tt)}</td>
-    </tr></tfoot>
-  </table></div>`;
-}
-
-/* â”€â”€ Product view â”€â”€ */
-function renderProduct(rows) {
-  const panel = document.getElementById('panel-product');
-  if (!rows.length) { panel.innerHTML = emptyHtml(); return; }
-
-  const map = {};
-  rows.forEach(r => {
-    if (!map[r.name]) map[r.name] = { total:0, cost:0, margin:0, qty:0, matched:r.matched, isCustom: !!r.isCustom };
-    const d = map[r.name];
-    d.total += r.salePrice; d.cost += r.cost; d.margin += r.margin; d.qty += r.qty;
-    if (!r.matched) d.matched = false;
-    if (r.isCustom) d.isCustom = true;
-  });
-
-  const prods = Object.entries(map).sort((a, b) => b[1].margin - a[1].margin);
-  const tt = rows.reduce((s,r)=>s+r.salePrice,0);
-  const tc = rows.reduce((s,r)=>s+r.cost,0);
-  const tm = rows.reduce((s,r)=>s+r.margin,0);
-
-  const body = prods.map(([name, v]) => {
-    const flag = !v.matched ? ' <span title="ì›ê°€ ë¯¸í™•ì¸" style="color:var(--warn)">â—</span>' : '';
-    let costCol;
-    if (!v.matched) {
-      costCol = `<span class="col-warn">ì›ê°€ ë¯¸í™•ì¸</span>`;
-    } else if (v.isCustom) {
-      costCol = `${won(v.cost)} <span class="col-custom" title="ì§ì ‘ ìž…ë ¥í•œ ì›ê°€">âœŽ</span>`;
-    } else {
-      costCol = won(v.cost);
-    }
-    return `<tr>
-      <td>${name}${flag}</td>
-      <td>${v.qty}</td>
-      <td>${won(v.total)}</td>
-      <td class="hide-xs">${costCol}</td>
-      <td class="col-green">${won(v.margin)}</td>
-      <td>${pct(v.margin, v.total)}</td>
-    </tr>`;
-  }).join('');
-
-  const warn = buildWarnBanner();
-  panel.innerHTML = warn + `<div class="tbl-wrap"><table class="tbl">
-    <thead><tr>
-      <th>ì œí’ˆëª…</th><th>ìˆ˜ëŸ‰</th>
-      <th>ë§¤ì¶œ</th><th class="hide-xs">ì›ê°€</th>
-      <th>ë§ˆì§„</th><th>ë§ˆì§„ìœ¨</th>
-    </tr></thead>
-    <tbody>${body}</tbody>
-    <tfoot><tr class="total-row">
-      <td>${prods.length}ì¢…</td>
-      <td>${rows.reduce((s,r)=>s+r.qty,0)}</td>
-      <td>${won(tt)}</td><td class="hide-xs">${won(tc)}</td>
-      <td class="col-green">${won(tm)}</td>
-      <td>${pct(tm,tt)}</td>
-    </tr></tfoot>
-  </table></div>`;
-}
-
-/* â”€â”€ Detail view â”€â”€ */
-function renderDetail(rows) {
-  const panel = document.getElementById('panel-detail');
+let payTotals    = { card: 0, easy: 0, cash: 0, cashReceipt: 0NÈËÈ:¬¬;(';"&:âê:ìá;&å:éé;-§;%hH
+;"&:ãæH;'¡zè)JB›]™Y’][\ÈHÈ˜YNˆÛÜÝÛÎˆNÈËÈ;,.:¬è;&ªH;ekzêªH
+;"';"&;'mH:¬á; ¬:ëî;cë;ej
+B‚‹Êˆ8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥dS’U8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d
+‹ÂŠ[˜Ý[Ûˆ[š]
+
+HÂˆÛÛœÝ›ÝÈH™]È]J
+NÂˆš[\“[ÛH›ÝËÒTÓÔÝš[™Ê
+KœÛXÙJÊNÂˆØÝ[Y[™Ù][[Y[žRY
+	Û[ÛXÚÉÊK˜[YHHš[\“[ÛÂ‚ˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆØÝ[Y[™Ù][[Y[žRY
+	ÜÝÜ™SX™[	ÊK^ÛÛ[HÝÜ™PÛÙNÂ‚ˆËÈš\™X˜\ÙBˆžHÂˆš\™X˜\ÙKš[š]X[^™P\
+Âˆ\RÙ^NˆR^˜TÞP×ÍŒÛÒÙVSMXSYÙQ“RSŽÜPšÜTÐH‹ˆ]]ÛXZ[ŽˆÚ[™\ÚÜ\Ø[\Ë™š\™X˜\ÙX\˜ÛÛH‹ˆ]X˜\ÙUT“ˆšÎ‹ËÝÚ[™\ÚÜ\Ø[\ËYY˜][\‹™š\™X˜\ÙZ[Ë˜ÛÛH‹ˆ›Ú™XÝYˆÚ[™\ÚÜ\Ø[\È‹ˆÝÜ˜YÙPXÚÙ]ˆÚ[™\ÚÜ\Ø[\Ë™š\™X˜\Ù\ÝÜ˜YÙK˜\‹ˆY\ÜØYÚ[™ÔÙ[™\’YˆŽLÌÍÍÎLH‹ˆ\YˆŒNŽLÌÍÍÎLNÙXŽŒŒM˜MÌÌÍŽMXÍY™NNY˜MÍ‚ˆJNÂˆÛÛœÝˆHš\™X˜\ÙK™]X˜\ÙJ
+NÂ‚ˆËÈ›ÙXÝÈ
+;&ä:¬ :ãl;'m;a,
+Bˆ‹œ™YŠ	Ü›ÙXÝÉÊK›ÛŠ	Ý˜[YIËÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆYˆ
+	‰ˆ›\Ý	‰ˆ›\Ý›[™Ý
+HÂˆ›ÙXÝÈH›\ÝÂˆYˆ
+ÜÔ›ÝÜË›[™Ý
+HX]ÚÛÜÝÊ
+NÂˆÙ]Þ[˜ÑÝ
+YJNÂˆBˆJNÂ‚ˆËÈØ\ÚØ˜[šÈØ[\Âˆ‹œ™YŠ	ÜØ[\×ÉÈ
+ÈÝÜ™PÛÙJK›ÛŠ	Ý˜[YIËÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆØ\Ú˜]ÈHÈØš™XÝ˜[Y\Ê
+K™š[\Š›ÛÛX[ŠHˆ×NÂˆ™[™\Š
+NÂˆÙ]Þ[˜ÑÝ
+YJNÂˆK
+
+HOˆÙ]Þ[˜ÑÝ
+˜[ÙJJNÂ‚ˆËÈ; «;&ª{'¤:¬ ;)à{($H;'¡zè){eg;&ä:¬ 
+Ü×ØÝ\ÝÛWØÛÜÝÊBˆ‹œ™YŠ	ÜÜ×ØÝ\ÝÛWØÛÜÝÉÊK›ÛŠ	Ý˜[YIËÛ˜\OˆÂˆÝ\ÝÛPÛÜÝÈHÛ˜\˜[
+
+HßNÂˆYˆ
+ÜÔ›ÝÜË›[™Ý
+HX]ÚÛÜÝÊ
+NÂˆJNÂ‚ˆËÈ:¬è;(%{)à;-§	ˆ;"&;"&:èã;'*
+:éé;'©zìá;!);(%JBˆÛÛœÝÝÜ™TÙ][™ÜÔ™YˆH‹œ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙJNÂˆÝÜ™TÙ][™ÜÔ™Y‹˜Ú[
+	Ùš^YÙ^[œÙ\ÉÊK›ÛŠ	Ý˜[YIËÛ˜\OˆÂˆš^Y^[œÙ\ÈHÛ˜\˜[
+
+HßNÂˆYˆ
+XÝ]™UXˆOOH	ÜÙ]IÊH™[™\”Ù]J
+NÂˆJNÂˆÝÜ™TÙ][™ÜÔ™Y‹˜Ú[
+	Ù™YWÜ˜]\ÉÊK›ÛŠ	Ý˜[YIËÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆYˆ
+
+H™YT˜]\ÈHÂˆYˆ
+XÝ]™UXˆOOH	ÜÙ]IÊH™[™\”Ù]J
+NÂˆJNÂˆÝÜ™TÙ][™ÜÔ™Y‹˜Ú[
+	Ü™Y—Ú][\ÉÊK›ÛŠ	Ý˜[YIËÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆYˆ
+
+H™Y’][\ÈHÈ˜YNˆ˜YHÛÜÝÛÎˆ˜ÛÜÝÛÈNÂˆYˆ
+XÝ]™UXˆOOH	ÜÙ]IÊH™[™\”Ù]J
+NÂˆJNÂˆËÈÔÈ;%ä{!`:â!;( H:ãl;'m;a,:èg:äçˆ‹œ™YŠ	ÜÜ×Ü›ÝÜËÉÈ
+ÈÝÜ™PÛÙJK›Û˜ÙJ	Ý˜[YIËÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆYˆ
+	‰ˆ\œ˜^Kš\Ð\œ˜^J
+H	‰ˆ›[™Ý
+HÂˆÜÔ›ÝÜÈH›X\
+ˆOˆ
+Âˆ]Nˆ‹™]H	ÉË˜[YNˆ‹›˜[YH	ÉË]Nˆ‹œ]HKˆØ[TšXÙNˆ‹œØ[TšXÙHÛÜÝˆˆX\™Ú[Žˆ‹œØ[TšXÙHX]ÚYˆ˜[ÙKˆÛÝ\˜ÙNˆ‹œÛÝ\˜ÙH	ÜÜÉÂˆJJNÂˆÛÛœÝ[HØÝ[Y[™Ù][[Y[žRY
+	ÜÜÔÝ]\ÉÊNÂˆ[^ÛÛ[H8§!H	ÜÜÔ›ÝÜË›[™Ýz¬m:èg:äç:ä*Âˆ[˜Û\ÜÓ˜[YHH	ÜÜË\Ý]\ÈÚÉÎÂˆX]ÚÛÜÝÊ
+NÂˆBˆJNÂ‚ˆËÈ:¬¬;(';"&:âê:ìá;&å:éé;-§8 %;&å:ì%:à%:åc:éâ:âé:èg:äçˆØY^UÝ[Ê‹ÝÜ™PÛÙJNÂ‚ˆHØ]Ú
+JHÂˆÛÛœÛÛKØ\›Š	Ñš\™X˜\ÙH[š]\œ›ÜŽ‰ËJNÂˆÙ]Þ[˜ÑÝ
+˜[ÙJNÂˆB‚ˆ™[™\Š
+NÈËÈ[š]X[[\H™[™\‚ŸJJ
+NÂ‚‹Êˆ8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥dÖSÈÕ8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d
+‹Â™[˜Ý[ÛˆÙ]Þ[˜ÑÝ
+ÚÊHÂˆØÝ[Y[™Ù][[Y[žRY
+	ÜÞ[˜ÑÝ	ÊK˜Û\ÜÓ˜[YHH	ÜÞ[˜ËYÝ	È
+È
+ÚÈÈ	ÉÈˆ	ÈÙ™‰ÊNÂŸB‚‹Êˆ8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥dVÑSTÐQ8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d
+‹Â™ØÝ[Y[™Ù][[Y[žRY
+	Ùš[R[‰ÊK˜Y]™[\Ý[™\Š	ØÚ[™ÙIË[˜Ý[ÛŠJHÂˆÛÛœÝš[\ÈH\œ˜^K™œ›ÛJK\™Ù]™š[\ÊNÂˆYˆ
+Yš[\Ë›[™Ý
+H™]\›ŽÂ‚ˆ][™[™ÈHš[\Ë›[™ÝÂˆ][˜ÛÛZ[™ÈH×NÂ‚ˆš[\Ë™›Ü‘XXÚ
+š[HOˆÂˆÛÛœÝ™XY\ˆH™]Èš[T™XY\Š
+NÂˆ™XY\‹›Û›ØYH]ˆOˆÂˆÛÛœÝØˆHÖœ™XY
+]‹\™Ù]œ™\Ý[È\Nˆ	Ø\œ˜^IËÙ[]\ÎˆYHJNÂˆÛÛœÝÜÈHØ‹”ÚY]ÖÝØ‹”ÚY]˜[Y\ÖÌWNÂˆÛÛœÝ›ÝÜÈHÖ][ËœÚY]Ý×ÚœÛÛŠÜËÈY˜[ˆ	ÉÈJNÂ‚ˆ›ÝÜË™›Ü‘XXÚ
+›ÝÈOˆÂˆËÈ:à¨;)ç;.ë:çïˆÛÛœÝ˜]Ñ]HH›ÝÖÉû(ï:ë.:®,;) ;'o;'¤	×H›ÝÖÉúà¨;)ç	×H›ÝÖÉû(ï:ë.;'o	×H	ÉÎÂˆ]]TÝˆH	ÉÎÂˆYˆ
+˜]Ñ]H[œÝ[˜Ù[Ùˆ]JHÂˆ]TÝˆH˜]Ñ]KÒTÓÔÝš[™Ê
+KœÛXÙJL
+NÂˆH[ÙHÂˆ]TÝˆHÝš[™Ê˜]Ñ]JKš[J
+KœÛXÙJL
+NÂˆB‚ˆËÈ;(';d¢:ê¡BˆÛÛœÝ˜[YHHÝš[™Ê›ÝÖÉû à{d¢:ê¡I×H›ÝÖÉû(';d¢:ê¡I×H	ÉÊKš[J
+NÂ‚ˆËÈ;"&:çâBˆÛÛœÝ]HHX]›X^
+K\œÙR[
+›ÝÖÉû"&:çâI×HJHJNÂ‚ˆËÈ;c$:éé:®";%hH8 %;.ë:çï:ê¡{%ä;)!:ì%:¯â;cë;ej:ä(;"&;'¢;'/:ëà:èg:êª:äè;`©:éo;`ä; âBˆËÈ:éâ;'m:á";"©:í ;f.:ìí;(m
+;ff:í¢û-ê;!£;e¢H;,¦:é«
+Bˆ]Ø[TšXÙHHÂˆ›Üˆ
+ÛÛœÝÈÙˆØš™XÝšÙ^\Ê›ÝÊJHÂˆYˆ
+Ëš[˜ÛY\Ê	û"é;c$:éé:®";%hIÊHËš[˜ÛY\Ê	ûc$:éé:®";%hIÊHËš[˜ÛY\Ê	ú®";%hIÊJHÂˆÛÛœÝ˜]ÈHÝš[™Ê›ÝÖÚ×JKš[J
+NÂˆÛÛœÝÚYÛˆH˜]ËœÝ\ÕÚ]
+	ËIÊHÈLHˆNÂˆÛÛœÝˆH˜]Ëœ™\XÙJÖ×—KÙË	ÉÊNÂˆYˆ
+ŠHÈØ[TšXÙHHÚYÛˆ
+ˆ
+\œÙR[
+ŠH
+NÈœ™XZÎÈBˆBˆB‚ˆYˆ
+]TÝˆ	‰ˆ˜[YH	‰ˆØ[TšXÙHOOH
+HÂˆ[˜ÛÛZ[™Ëœ\Ú
+È]Nˆ]TÝ‹˜[YK]KØ[TšXÙKÛÜÝˆX\™Ú[ŽˆØ[TšXÙKX]ÚYˆ˜[ÙKÛÝ\˜ÙNˆ	ÜÜÉÈJNÂˆBˆJNÂ‚ˆ[™[™ËKNÂˆYˆ
+[™[™ÈOOH
+Hš[˜[^™J[˜ÛÛZ[™ÊNÂˆNÂˆ™XY\‹œ™XY\Ð\œ˜^PY™™\Šš[JNÂˆJNÂ‚ˆ\Ë˜[YHH	ÉÎÂŸJNÂ‚™[˜Ý[Ûˆš[˜[^™J[˜ÛÛZ[™ÊHÂˆËÈY\ˆ]JÛ˜[YJÜ]JÜØ[TšXÙHÙ^BˆÛÛœÝ^\Ý[™ÈH™]ÈÙ]
+ÜÔ›ÝÜË›X\
+ˆOˆ	Ü‹™]__	Ü‹›˜[Y__	Ü‹œ]__	Ü‹œØ[TšXÙ_X
+JNÂˆÛÛœÝYYH[˜ÛÛZ[™Ë™š[\ŠˆOˆY^\Ý[™Ëš\Ê	Ü‹™]__	Ü‹›˜[Y__	Ü‹œ]__	Ü‹œØ[TšXÙ_X
+JNÂˆÜÔ›ÝÜÈHË‹‹œÜÔ›ÝÜË‹‹˜YYNÂ‚ˆÛÛœÝ[HØÝ[Y[™Ù][[Y[žRY
+	ÜÜÔÝ]\ÉÊNÂˆ[^ÛÛ[H8§!H	ÜÜÔ›ÝÜË›[™Ýz¬m:èg:äç:ä*
+	ØYY›[™Ýz¬m;-¥:¬ 
+XÂˆ[˜Û\ÜÓ˜[YHH	ÜÜË\Ý]\ÈÚÉÎÂ‚ˆËÈš\™X˜\Ù{%ä:â!;( H;( ;'©BˆžHÂˆÛÛœÝˆHš\™X˜\ÙK™]X˜\ÙJ
+NÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆ‹œ™YŠ	ÜÜ×Ü›ÝÜËÉÈ
+ÈÝÜ™PÛÙJKœÙ]
+ÜÔ›ÝÜË›X\
+ˆOˆ
+Âˆ]Nˆ‹™]K˜[YNˆ‹›˜[YK]Nˆ‹œ]KˆØ[TšXÙNˆ‹œØ[TšXÙKÛÝ\˜ÙNˆ‹œÛÝ\˜ÙH	ÜÜÉÂˆJJJNÂˆHØ]Ú
+JHßB‚ˆX]ÚÛÜÝÊ
+NÂŸB‚‹Êˆ8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥dÓÔÕPUÒS‘È8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d8¥d
+‹Â‚‹ËÈ;&`;'n:ê¡H;eg:® ;dg:®,;a­{'o
+:¬&{'`;d¢;(¡{'f:âé:én;dg:®,8¡¤ˆ:ãæ{'o;ef:¬£
+B™[˜Ý[Ûˆ›Ü›TÞ[›Ûž[\ÊÊHÂˆ™]\›ˆÂˆœ™\XÙJû é:ãá:á);'mÙË	û é:ém:ãá:á)	ÊHËÈÚ\™Û›˜^Nˆ; é:ãá:á);'m8¡¤ˆ; é:ém:ãá:á)ˆœ™\XÙJû é:ãá:á)ÙË	û é:ém:ãá:á)	ÊHËÈ; é:ãá:á)8¡¤ˆ; é:ém:ãá:á)ˆœ™\XÙJú®c:ì¨:ém:á)ÙË	û.m:ì¨:ém:á)	ÊHËÈØX™\›™]ˆ:®c8¡¤ˆ;.mˆœ™\XÙJú®c;!ïÙË	û.m;!ï	ÊHËÈØ\Ú]È;"çH;dg:®,ˆœ™\XÙJû ¤:ánÙË	ûe/:án	ÊHËÈ[›Ýˆ; ¤:án8¡¤ˆ;e/:ánˆœ™\XÙJúë©;"©;.¨ËÙË	úë¢;"©;.m	ÊHËÈ]\ØØ]ˆœ™\XÙJúë©;"©;.mÙË	úë¢;"©;.m	ÊNÂŸB‚‹ËÈš\™X˜\ÙHÙ^zèg; «;&ªH:¬ :â©{eg;%b;(!;eg;`©; ç{!,H
+ˆÈÈHÈ	;(':¬l
+B™[˜Ý[ÛˆÝ\ÝÛPÛÜÝÙ^JÜÓ˜[YJHÂˆ™]\›ˆ›Ü›S˜[YJÜÓ˜[YJBˆœ™\XÙJÖË‹È××IKÙË	ÉÊBˆœ™\XÙJ×ÊËÙË	×ÉÊBˆœÛXÙJLŒ
+NÈËÈš\™X˜\ÙHÙ^H;-g:ã :®.;'m;(';egŸB‚‹ËÈ;(';d¢:ê¡H;(%z­ç;feˆ;!£:ë.;'¤:¬ízì,H;(%zé«û($zäd; «H;(':¬l™[˜Ý[Ûˆ›Ü›S˜[YJÊHÂˆ™]\›ˆ›Ü›TÞ[›Ûž[\ÊˆËš[J
+BˆÓÝÙ\Ø\ÙJ
+Bˆœ™\XÙJ×ËŠ×WÊ‹ÙË	ÉÊHËÈÙÚYÙ]Kúâê;d¢H:äìH;(':¬lˆœ™\XÙJ×ËÙË	È	ÊHËÈ;"«:ç¦;"ç8¡¤ˆ:¬ízì,H
+:å.:®,û ­:­kû-";/e;,¦:é«
+Bˆœ™\XÙJËÊ‹ÙË	È	ÊHËÈ;"o;dg8¡¤ˆ:¬ízì,H
+:îa:á):èlH:äç:íå{"ç:¯+:ç*‹‹ˆ;,¦:é«
+Bˆœ™\XÙJ×ÊËÙË	È	ÊBˆš[J
+Bˆ
+NÂŸB‚‹ËÈ;&ªzçâH;dg:®,;(':¬l
+ÍL[L[:ëî:ââ:äìJH8 %;%a:­k;%aL[8¡¥;%a:­k;%a:ëî:ââ:éé;.k{&ªB™[˜Ý[ÛˆÝš\Ú^™JÊHÂˆ™]\›ˆÂˆœ™\XÙJ×—
+×Ê›[‹ÙÚK	ÉÊHËÈÍL[ÍÍ[[L[ˆœ™\XÙJ×—
+×Ê˜Û‹ÙÚK	ÉÊHËÈÍXÛˆœ™\XÙJ×ºëî:ââ‹ÙË	ÉÊBˆœ™\XÙJ×ºço;)à‹ÙË	ÉÊBˆœ™\XÙJ×»"©:ê¬‹ÙË	ÉÊBˆœ™\XÙJ×ÊËÙË	È	ÊBˆš[J
+NÂŸB‚‹ËÈ:îb;bì;)à;%ì:ãá;(':¬l
+	ÌŒ‹ŒŒ‹ŒNH:äìJB™[˜Ý[ÛˆÝš\YX\ŠÊHÂˆ™]\›ˆÂˆœ™\XÙJË×Ê‰Ï×ÍIË	ÉÊHËÈ:àg{'fŒŒ‹	ÌŒˆ:äìBˆœ™\XÙJË×ÊŒŒÌŸIË	ÉÊHËÈ:àg{'fŒŒˆ;f%{"çBˆœ™\XÙJ×Ê‰Ï×ÌŸIË	ÉÊHËÈ:àg{'f	ÌŒˆ;f%{"çBˆœ™\XÙJ×Ê×ÍW‹ÙË	ÉÊHËÈ;)$z¬!;'fŒŒˆ;f%{"çBˆœ™\XÙJ×ÊËÙË	È	ÊBˆš[J
+NÂŸB‚‹ËÈ:¬ :¬ªp­úîa;(';d¢;e¢{'n;)à;fe{'n
+KÈ:ë/;d¢:äìJB™[˜Ý[Ûˆ\Ó›Û”›ÙXÝ
+˜[YJHÂˆÛÛœÝH˜[YKš[J
+NÂˆYˆ
+×–×JÉË\Ý
+
+JH™]\›ˆYNÈËÈ:¬ :¬ªzéãˆKÈKˆYˆ
+OOH	úë/;d¢	ÊH™]\›ˆYNÈËÈ:îa;d¢ˆ™]\›ˆ˜[ÙNÂˆËÈ8 .È[;cë;ej;ekzêªJ:í!:ì¨;'mÍL[;'«zâé:ââ;%æÍÍ[[:äìJ{'`;(%{d¢;'m:ëà:èg;ea;a,;(':¬lŸB‚‹ËÈ;c®;)äH:¬l:é«;'(; «:ãá
+;&);`à:ìí;(%{&ªH8 %;`m8¡¥;`k;"©8¡¥;)¢:äìH_Œ»'¤;,*;'m;,¦:é«ŒJB™[˜Ý[ÛˆY]Ú[JKŠHÂˆYˆ
+XHXŠH™]\›ˆÂˆÛÛœÝHHK›[™ÝˆH‹›[™ÝÂˆYˆ
+X]˜XœÊHHŠHˆÊH™]\›ˆÈËÈ:®.;'m;,*:á":ë-;`k:êm;"©;`­BˆÛÛœÝ™]ˆH\œ˜^K™œ›ÛJÛ[™Ýˆˆ
+È_K
+ËJHOˆJNÂˆÛÛœÝÝ\ˆH\œ˜^Jˆ
+ÈJK™š[
+
+NÂˆ›Üˆ
+]HHNÈHHNÈJÊÊHÂˆÝ\–ÌHHNÂˆ›Üˆ
+]ˆHNÈˆHŽÈŠÊÊHÂˆÝ\–Ú—HHVÚKLWHOOH–Ú‹LWHÈ™]–Ú‹LWBˆˆH
+ÈX]›Z[Š™]–Ú—KÝ\–Ú‹LWK™]–Ú‹LWJNÂˆBˆ™]‹œÜXÙJˆ
+ÈK‹‹˜Ý\ŠNÂˆBˆ™]\›ˆHH™]–Û—HÈX]›X^
+KŠNÂŸB‚‹ËÈ;"©:éâ;b®;(';d¢;`ä; âB™[˜Ý[Ûˆš[™›ÙXÝÛX\
+ÜÓ˜[YJHÂˆYˆ
+\Ó›Û”›ÙXÝ
+ÜÓ˜[YJJH™]\›ˆ[Â‚ˆÛÛœÝ›Ü›HH›Ü›S˜[YJÜÓ˜[YJNÂˆÛÛœÝ›Ü›S›ÖYX\ˆHÝš\YX\Š›Ü›JNÂ‚ˆËÈzâê:¬áˆ;(%{fe{g¢;'o;.fˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆYˆ
+›Ü›S˜[YJ›˜[YJHOOH›Ü›JH™]\›ˆÂˆB‚ˆËÈKzâê:¬áˆ:ça;%­;$ì:®,:ë-;"ç;fá;'o;.fˆËÈ;&"
+HÔÈ»c¦;co;'«Hˆ8¡¥š\™X˜\ÙH»c¦;co;'«HˆÈÔÈ»"©;a¨:ââ:é«:ì¡ˆ8¡¥š\™X˜\ÙH»"©;a¨:ââ:é«:ì¡‚ˆÛÛœÝ›Ü›S›ÔÜH›Ü›Kœ™\XÙJ×ËÙË	ÉÊNÂˆÛÛœÝ›Ü›S›ÖYX\“›ÔÜH›Ü›S›ÖYX\‹œ™\XÙJ×ËÙË	ÉÊNÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝˆH›Ü›S˜[YJ›˜[YJNÂˆÛÛœÝ“›ÔÜH‹œ™\XÙJ×ËÙË	ÉÊNÂˆÛÛœÝ“›ÖYX\“›ÔÜHÝš\YX\ŠŠKœ™\XÙJ×ËÙË	ÉÊNÂˆYˆ
+“›ÔÜOOH›Ü›S›ÔÜ
+H™]\›ˆÂˆYˆ
+“›ÖYX\“›ÔÜOOH›Ü›S›ÖYX\“›ÔÜ	‰ˆ›Ü›S›ÖYX\“›ÔÜ›[™ÝˆŠH™]\›ˆÂˆB‚ˆËÈKúâê:¬áˆ;%gºí :í¡;'o;.f
+ÔÈ;'m:é¡;'mš\™X˜\ÙH;'m:é¡;'f;"ç;'¤H:í :í¡;'o:åc
+BˆËÈ;&"
+H»,,;"©;ef;'m;)àHˆ8¡¤ˆ»,,;"©;ef;'m;)àzé«;( :î#:î#:é/ˆ;%gºí :í¡;cë;ejˆYˆ
+›Ü›S›ÔÜ›[™ÝH
+HÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝ“›ÔÜH›Ü›S˜[YJ›˜[YJKœ™\XÙJ×ËÙË	ÉÊNÂˆYˆ
+“›ÔÜœÝ\ÕÚ]
+›Ü›S›ÔÜ
+JH™]\›ˆÂˆBˆBˆYˆ
+›Ü›S›ÖYX\“›ÔÜ›[™ÝH
+HÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝ“›ÖYX\“›ÔÜHÝš\YX\Š›Ü›S˜[YJ›˜[YJJKœ™\XÙJ×ËÙË	ÉÊNÂˆYˆ
+“›ÖYX\“›ÔÜœÝ\ÕÚ]
+›Ü›S›ÖYX\“›ÔÜ
+JH™]\›ˆÂˆBˆB‚ˆËÈºâê:¬áˆ:îb;bì;)à;(':¬l;fá;'o;.fˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝˆH›Ü›S˜[YJ›˜[YJNÂˆYˆ
+Ýš\YX\ŠŠHOOH›Ü›S›ÖYX\ˆ	‰ˆ›Ü›S›ÖYX\‹›[™ÝˆŠH™]\›ˆÂˆB‚ˆËÈ‹zâê:¬áˆ;&ªzçâH;dg:®,;(':¬l;fá;'o;.f
+;%a:­k;%aL[8¡¥;%a:­k;%a:ëî:ââ
+BˆÛÛœÝ›Ü›TÞˆHÝš\Ú^™J›Ü›JNÂˆÛÛœÝ›Ü›TÞ“–HHÝš\Ú^™J›Ü›S›ÖYX\ŠNÂˆYˆ
+›Ü›TÞ‹›[™ÝHŠHÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝˆH›Ü›S˜[YJ›˜[YJNÂˆÛÛœÝ”ÞˆHÝš\Ú^™JŠNÂˆYˆ
+”ÞˆOOH›Ü›TÞŠH™]\›ˆÂˆYˆ
+›Ü›TÞ“–K›[™ÝHˆ	‰ˆÝš\Ú^™JÝš\YX\ŠŠJHOOH›Ü›TÞ“–JH™]\›ˆÂˆBˆB‚ˆËÈúâê:¬áˆ;cë;ej:­ :¬á
+;eg:® ;'`º® ;'¤;'m; à{'m:êm;'(;fª
+Bˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝˆH›Ü›S˜[YJ›˜[YJNÂˆÛÛœÝ“›ÖYX\ˆHÝš\YX\ŠŠNÂˆYˆ
+›Ü›K›[™ÝHˆ	‰ˆ
+‹š[˜ÛY\Ê›Ü›JH›Ü›Kš[˜ÛY\ÊŠJJH™]\›ˆÂˆYˆ
+›Ü›S›ÖYX\‹›[™ÝHˆ	‰ˆ
+“›ÖYX\‹š[˜ÛY\Ê›Ü›S›ÖYX\ŠH›Ü›S›ÖYX\‹š[˜ÛY\Ê“›ÖYX\ŠJJH™]\›ˆÂˆB‚ˆËÈ:âê:¬áˆÔû'f:êª:äè:âê;%­:¬ š\™X˜\ÙH;'m:é¡;%b;%ä;cë;ej
+:æ$:â¥;%ëzì*{e©JBˆËÈ;&"
+H»"©;a¨:ââ:é«:ì¡ˆ8¡¤ˆ»"©;a¨:ââ:é«:ì¡:®c:ì¨:ém:á);!£:îa:áïH	ÌŒˆˆÈ»%a:éâ:èg:á):ì';cí:é«;,¯:çoˆ8¡¤ˆº¯,:å¯8 )ˆ;%a:éâ:èg:á)8 )ˆ:ì';cí:é«;,¯:ço‚ˆÛÛœÝÜÕÛÜ™ÈH›Ü›KœÜ]
+	È	ÊK™š[\ŠÈOˆË›[™ÝHŠNÂˆYˆ
+ÜÕÛÜ™Ë›[™Ýˆ
+HÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝˆH›Ü›S˜[YJ›˜[YJNÂˆYˆ
+ÜÕÛÜ™Ë™]™\žJÈOˆ‹š[˜ÛY\ÊÊJJH™]\›ˆÈËÈÔÈ:âê;%­:êª:äd»%ä;cë;ejˆBˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝ“›ÖYX\ˆHÝš\YX\Š›Ü›S˜[YJ›˜[YJJNÂˆYˆ
+ÜÕÛÜ™Ë™]™\žJÈOˆ“›ÖYX\‹š[˜ÛY\ÊÊJJH™]\›ˆÂˆBˆËÈ;%ëzì*{e©Nˆš\™X˜\Ù{'f:êª:äè:âê;%­:¬ ÔÈ;'m:é¡;%b;%ä;cë;ej
+;)éû'`ˆ;'m:é¡8¡¤ˆ:®-ÔÈ;'m:é¡
+Bˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝ˜•ÛÜ™ÈH›Ü›S˜[YJ›˜[YJKœÜ]
+	È	ÊK™š[\ŠÈOˆË›[™ÝHŠNÂˆYˆ
+˜•ÛÜ™Ë›[™ÝHˆ	‰ˆ˜•ÛÜ™Ë™]™\žJÈOˆ›Ü›Kš[˜ÛY\ÊÊJJH™]\›ˆÂˆBˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝ˜•ÛÜ™ÈHÝš\YX\Š›Ü›S˜[YJ›˜[YJJKœÜ]
+	È	ÊK™š[\ŠÈOˆË›[™ÝHŠNÂˆYˆ
+˜•ÛÜ™Ë›[™ÝHˆ	‰ˆ˜•ÛÜ™Ë™]™\žJÈOˆ›Ü›S›ÖYX\‹š[˜ÛY\ÊÊJJH™]\›ˆÂˆBˆB‚ˆËÈzâê:¬áˆ:âê;%­:¬®{.j:îa;'*
+:âê;%­;'m; àH:®-;'m:é¡;'`K:à¦:ê.;)àŠBˆYˆ
+ÜÕÛÜ™Ë›[™ÝOOH
+H™]\›ˆ[ÂˆÛÛœÝÜÔÙ]H™]ÈÙ]
+ÜÕÛÜ™ÊNÂˆÛÛœÝÛ™Ó˜[YHHÜÕÛÜ™Ë›[™ÝHÂ‚ˆ]™\ÝH[™\ÝØÛÜ™HHÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝÛÜ™ÈH›Ü›S˜[YJ›˜[YJKœÜ]
+	È	ÊK™š[\ŠÈOˆË›[™ÝHŠNÂˆÛÛœÝÝ™\›\HÛÜ™Ë™š[\ŠÈOˆÜÔÙ]š\ÊÊJK›[™ÝÂˆÛÛœÝØÛÜ™HHÝ™\›\ÈX]›X^
+ÜÔÙ]œÚ^™KÛÜ™Ë›[™Ý
+NÂˆÛÛœÝ™\ÚÛHÛ™Ó˜[YHÈHˆŽÂˆYˆ
+ØÛÜ™Hˆ™\ÝØÛÜ™H	‰ˆØÛÜ™HH™\ÚÛ
+HÂˆ™\ÝØÛÜ™HHØÛÜ™NÈ™\ÝHÂˆBˆBˆYˆ
+™\Ý
+H™]\›ˆ™\ÝÂ‚ˆËÈºâê:¬áˆ;c®;)äH:¬l:é«;'(; «:ãá
+;&);`à:ìí;(%H8 %;`m8¡¥;`k;"©8¡¥;)¢:äìH_Œ»'¤;,*;'m
+BˆËÈ:¬ízì,H;(':¬l;fá;'(; «:ãá8¢iLÎ;'m:êm:éé;.kBˆ]™\ÝÚ[HH[™\ÝÚ[TØÛÜ™HHÂˆ›Üˆ
+ÛÛœÝÙˆ›ÙXÝÊHÂˆÛÛœÝ“”ÈH›Ü›S˜[YJ›˜[YJKœ™\XÙJ×ËÙË	ÉÊNÂˆÛÛœÝÌHHY]Ú[J›Ü›S›ÔÜ“”ÊNÂˆYˆ
+ÌHˆ™\ÝÚ[TØÛÜ™H	‰ˆÌHHÎ
+HÈ™\ÝÚ[TØÛÜ™HHÌNÈ™\ÝÚ[HHÈBˆÛÛœÝ“–S”ÈHÝš\YX\Š›Ü›S˜[YJ›˜[YJJKœ™\XÙJ×ËÙË	ÉÊNÂˆÛÛœÝÌˆHY]Ú[J›Ü›S›ÖYX\“›ÔÜ“–S”ÊNÂˆYˆ
+Ìˆˆ™\ÝÚ[TØÛÜ™H	‰ˆÌˆHÎ
+HÈ™\ÝÚ[TØÛÜ™HHÌŽÈ™\ÝÚ[HHÈBˆBˆ™]\›ˆ™\ÝÚ[NÂŸB‹ÊˆÑUH8 $Èš\™X˜\ÙH;( ;'©H;ej;"&:äé
+‹Â‚™[˜Ý[ÛˆØY^UÝ[Ê‹ÝÜ™PÛÙJHÂˆYˆ
+YŠH™]\›ŽÂˆÛÛœÝØY™S[ÛHš[\“[Ûœ™\XÙJ	ËIË	×ÉÊNÂˆ‹œ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÜ^WÝÝ[ËÉÈ
+ÈØY™S[Û
+Bˆ›Û˜ÙJ	Ý˜[YIÊK[ŠÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆYˆ
+
+H^UÝ[ÈHÂˆYˆ
+XÝ]™UXˆOOH	ÜÙ]IÊH™[™\”Ù]J
+NÂˆJNÂŸB‚™[˜Ý[ÛˆØ]™T^UÝ[Ê
+HÂˆžHÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆÛÛœÝØY™S[ÛHš[\“[Ûœ™\XÙJ	ËIË	×ÉÊNÂˆš\™X˜\ÙK™]X˜\ÙJ
+Bˆœ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÜ^WÝÝ[ËÉÈ
+ÈØY™S[Û
+BˆœÙ]
+^UÝ[ÊNÂˆHØ]Ú
+JHßBŸB‚™[˜Ý[ÛˆØ]™Q™YT˜]\Ê
+HÂˆžHÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆš\™X˜\ÙK™]X˜\ÙJ
+Bˆœ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÙ™YWÜ˜]\ÉÊBˆœÙ]
+™YT˜]\ÊNÂˆHØ]Ú
+JHßBŸB‚™[˜Ý[ÛˆY^[œÙJ
+HÂˆÛÛœÝYH	Ù^ÉÈ
+È]K››ÝÊ
+NÂˆÛÛœÝ˜[YHH›Û\
+	û)à;-§;ekzêªzê¡{'a;'¡zè){ef;!.;&¥
+;&"ˆ;'¡:ã :èã;'n:¬m:îa
+IË	ÉÊNÂˆYˆ
+[˜[YJH™]\›ŽÂˆÛÛœÝ[]ÝˆH›Û\
+˜[YH
+È	È;&å:®";%hH
+;&ä
+OÉË	Ì	ÊNÂˆÛÛœÝ[[Ý[H\œÙR[
+Ýš[™Ê[]ÝŠKœ™\XÙJÖ×—KÙË	ÉÊJHÂˆžHÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆš\™X˜\ÙK™]X˜\ÙJ
+Bˆœ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÙš^YÙ^[œÙ\ËÉÈ
+ÈY
+BˆœÙ]
+È˜[YK[[Ý[Ü™\Žˆ]K››ÝÊ
+HJNÂˆHØ]Ú
+JHßBŸB‚™[˜Ý[Ûˆ[]Q^[œÙJY
+HÂˆYˆ
+XÛÛ™š\›J	û'm;ekzêª{'a; «{(';eh:®c;&¥ÉÊJH™]\›ŽÂˆžHÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆš\™X˜\ÙK™]X˜\ÙJ
+Bˆœ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÙš^YÙ^[œÙ\ËÉÈ
+ÈY
+Bˆœ™[[Ý™J
+NÂˆHØ]Ú
+JHßBŸB‚™[˜Ý[Ûˆ\]Q^[œÙP[[Ý[
+Y˜[
+HÂˆÛÛœÝ[[Ý[H\œÙR[
+Ýš[™Ê˜[
+Kœ™\XÙJÖ×—KÙË	ÉÊJHÂˆžHÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆš\™X˜\ÙK™]X˜\ÙJ
+Bˆœ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÙš^YÙ^[œÙ\ËÉÈ
+ÈY
+È	ËØ[[Ý[	ÊBˆœÙ]
+[[Ý[
+NÂˆHØ]Ú
+JHßBŸB‚™[˜Ý[ÛˆØ]™T™Y’][\Ê
+HÂˆžHÂˆÛÛœÝÝÜ™PÛÙHHØØ[ÝÜ˜YÙK™Ù]][J	ÝÜ×ÜÝÜ™WØÛÙIÊH	ÜÝÜ™LIÎÂˆš\™X˜\ÙK™]X˜\ÙJ
+Bˆœ™YŠ	ÜÝÜ™WÜÙ][™ÜËÉÈ
+ÈÝÜ™PÛÙH
+È	ËÜ™Y—Ú][\ÉÊBˆœÙ]
+™Y’][\ÊNÂˆHØ]Ú
+JHßBŸB‚™[˜Ý[Ûˆ™[™\”Ù]J
+HÂˆÛÛœÝ[™[HØÝ[Y[™Ù][[Y[žRY
+	Ü[™[\Ù]IÊNÂˆÛÛœÝ›ÝÜÈHÙ]›ÝÜÊ
+NÂˆÛÛœÝÝ[™]™[YHH›ÝÜËœ™YXÙJ
+ËŠHOˆÈ
+È
+‹œØ[TšXÙH
+K
+NÂˆÛÛœÝÝ[X\™Ú[ˆH›ÝÜËœ™YXÙJ
+ËŠHOˆÈ
+È
+‹›X\™Ú[ˆ
+K
+NÂ‚ˆÛÛœÝØ\™™YHHX]œ›Ý[™
+^UÝ[Ë˜Ø\™
+ˆ™YT˜]\Ë˜Ø\™ÈL
+NÂˆÛÛœÝX\ÞQ™YHHX]œ›Ý[™
+^UÝ[Ë™X\ÞH
+ˆ™YT˜]\Ë™X\ÞHÈL
+NÂˆÛÛœÝÝ[™Y\ÈHØ\™™YH
+ÈX\ÞQ™YNÂ‚ˆÛÛœÝ^\ÝHØš™XÝ™[šY\Êš^Y^[œÙ\ÊBˆœÛÜ
+
+KŠHOˆ
+VÌWK›Ü™\ˆ
+HH
+–ÌWK›Ü™\ˆ
+JNÂˆÛÛœÝÝ[š^YH^\Ýœ™YXÙJ
+ËËWJHOˆÈ
+È
+K˜[[Ý[
+K
+NÂ‚ˆÛÛœÝÝ[YXÝ[ÛœÈHÝ[™Y\È
+ÈÝ[š^YÂˆÛÛœÝ™]›Ùš]HÝ[X\™Ú[ˆHÝ[YXÝ[ÛœÎÂ‚ˆÛÛœÝ™YT›ÝÜÈHÂˆÈÙ^Nˆ	ØØ\™	ËX™[ˆ	ü'ä¬È.m:äç	Ë˜]RÙ^Nˆ	ØØ\™	Ë˜[ˆ^UÝ[Ë˜Ø\™™YNˆØ\™™YHKˆÈÙ^Nˆ	ÙX\ÞIËX™[ˆ	ü'äìH:¬!;c®:¬¬;('	Ë˜]RÙ^Nˆ	ÙX\ÞIË˜[ˆ^UÝ[Ë™X\ÞK™YNˆX\ÞQ™YHKˆNÂ‚ˆÛÛœÝ™YT›ÝÜÒ[H™YT›ÝÜË›X\
+ˆOˆˆ]ˆÛ\ÜÏH™™YK\›ÝÈ‚ˆÜ[ˆÛ\ÜÏH™™YK[X™[‰Ù‹›X™[OÜÜ[‚ˆ[œ]Û\ÜÏHœÙ]KZ[œ]ˆ\OH›[X™\ˆˆZ[HŒˆÝ\HŒL‚ˆ˜[YOH‰Ù‹˜[	ÉßHˆXÙZÛ\Hºéé;-§;%hH
+;&ä
+H‚ˆÛ˜Ú[™ÙOHœ^UÝ[Ë‰Ù‹šÙ^_O\\œÙR[
+\Ë˜[YKœ™\XÙJÖ×—KÙË	ÉÊJ_ÈØ]™T^UÝ[Ê
+NÈ™[™\”Ù]J
+H‚ˆÜ[ˆÛ\ÜÏH™™YKX\œ›ÝÈ°åÈÜÜ[‚ˆ[œ]Û\ÜÏHœÙ]KZ[œ]Ù]KZ[œ]\˜]Hˆ\OH›[X™\ˆˆZ[HŒˆX^HŒLˆÝ\HŒŒH‚ˆ˜[YOH‰Ù™YT˜]\ÖÙ‹œ˜]RÙ^W_H‚ˆÛ˜Ú[™ÙOH™™YT˜]\Ë‰Ù‹œ˜]RÙ^_O\\œÙQ›Ø]
+\Ë˜[YJ_ÈØ]™Q™YT˜]\Ê
+NÈ™[™\”Ù]J
+H‚ˆÜ[ˆÛ\ÜÏH™™YKX\œ›ÝÈ‰OÜÜ[‚ˆÜ[ˆÛ\ÜÏH™™YK\™\Ý[H	ÝÛÛŠ‹™™YJ_OÜÜ[‚ˆÙ]˜
+Kš›Ú[Š	ÉÊH
+Èˆ]ˆÛ\ÜÏH™™YK\›ÝÈˆÝ[OH›ÜXÚ]N‹ŽH‚ˆÜ[ˆÛ\ÜÏH™™YK[X™[¼'éïˆ;f!:®";& {"&;)§OÜÜ[‚ˆ[œ]Û\ÜÏHœÙ]KZ[œ]ˆ\OH›[X™\ˆˆZ[HŒˆÝ\HŒL‚ˆ˜[YOH‰Ü^UÝ[Ë˜Ø\Ú™XÙZ\	ÉßHˆXÙZÛ\Hº®";%hH
+;&ä
+H‚ˆÛ˜Ú[™ÙOHœ^UÝ[Ë˜Ø\Ú™XÙZ\\\œÙR[
+\Ë˜[YKœ™\XÙJÖ×—KÙË	ÉÊJ_ÈØ]™T^UÝ[Ê
+H‚ˆÜ[ˆÛ\ÜÏH™™YKX\œ›ÝÈˆÝ[OH™›Û\Ú^™NŒL\ØÛÛÜŽ˜\ŠK]^LÊH»"&;"&:èã;%á»'cÜÜ[‚ˆÙ]˜Â‚ˆÛÛœÝ^›ÝÜÒ[H^\Ý›X\
+
+ÚYWJHOˆˆ]ˆÛ\ÜÏH™^[œÙK\›ÝÈ‚ˆÜ[ˆÛ\ÜÏH™^[œÙK[˜[YHˆÝ[OH™›Û\Ú^™NŒLÜ‰ÙK›˜[Y_OÜÜ[‚ˆ[œ]Û\ÜÏHœÙ]KZ[œ]ˆ\OH›[X™\ˆˆZ[HŒˆÝ\HŒL‚ˆ˜[YOH‰ÙK˜[[Ý[	ÉßHˆXÙZÛ\Hº®";%hH
+;&ä
+H‚ˆÛ˜Ú[™ÙOH\]Q^[œÙP[[Ý[
+	ÉÚYIË\Ë˜[YJH‚ˆ]ÛˆÛ\ÜÏH™^[œÙKY[ˆÛ˜ÛXÚÏH™[]Q^[œÙJ	ÉÚYIÊHˆ]OH» «{('°åÏØ]Û‚ˆÙ]˜
+Kš›Ú[Š	ÉÊNÂ‚ˆÛÛœÝ]]Ñ™YT›ÝÜÒ[HÂˆÈX™[ˆ	ü'ä¬È;.m:äç;"&;"&:èã	Ë™YNˆØ\™™YHKˆÈX™[ˆ	ü'äìH:¬!;c®:¬¬;(';"&;"&:èã	Ë™YNˆX\ÞQ™YHKˆK™š[\ŠˆOˆ‹™™YHˆ
+K›X\
+ˆOˆˆ]ˆÛ\ÜÏH™^[œÙK\›ÝÈˆÝ[OH›ÜXÚ]N‹ÍH‚ˆÜ[ˆÛ\ÜÏH™^[œÙK[˜[YHˆÝ[OH™›Û\Ú^™NŒLÜØÛÛÜŽ˜\ŠK]^LŠH‰Ù‹›X™[HÜ[ˆÝ[OH™›Û\Ú^™NŒL\ØÛÛÜŽ˜\ŠK]^LÊHŠ;'¤:ãæJOÜÜ[ÜÜ[‚ˆÜ[ˆÝ[OH™›Û\Ú^™NŒLÜÙ›Û]ÙZYÚLØÛÛÜŽ˜\ŠK]Ø\›ŠH‰ÝÛÛŠ‹™™YJ_OÜÜ[‚ˆÙ]˜
+Kš›Ú[Š	ÉÊNÂ‚ˆ[™[š[›™\’SHˆ]ˆÛ\ÜÏH›™]X›Þ‚ˆ]ˆÛ\ÜÏH›™]X›Þ[X™[»'m:âë;"';"&;'mH
+	Ùš[\“[ÛJOÙ]‚ˆ]ˆÛ\ÜÏH›™]X›ÞY›Ü›][H‚ˆ;-'H:éâ;)á	ÝÛÛŠÝ[X\™Ú[Š_Oœ‚ˆ8¢$ˆ:¬è;(%{)à;-§;ejz¬á	ÝÛÛŠÝ[YXÝ[ÛœÊ_BˆÙ]‚ˆ]ˆÛ\ÜÏH›™]X›Þ]˜[	Û™]›Ùš]È	È™YÉÈˆ	ÉßH‰ÝÛÛŠ™]›Ùš]
+_OÙ]‚ˆÙ]‚‚ˆ]ˆÛ\ÜÏHœÙ]K\ÙXÝ[Ûˆ‚ˆ]ˆÛ\ÜÏHœÙ]K]]H¼'ä¬È:¬¬;(';"&:âê:ìá;"&;"&:èã;(%{ ¬Ù]‚ˆ	Ù™YT›ÝÜÒ[Bˆ]ˆÛ\ÜÏHœÙ]K\ÝXˆ»"&;"&:èã;ejz¬áÜ[ˆÛ\ÜÏHœÝX‹]˜[‰ÝÛÛŠÝ[™Y\Ê_OÜÜ[Ù]‚ˆÙ]‚‚ˆ]ˆÛ\ÜÏHœÙ]K\ÙXÝ[Ûˆ‚ˆ]ˆÛ\ÜÏHœÙ]K]]H¼'ãè:¬è;(%{)à;-§Ù]‚ˆ	Ø]]Ñ™YT›ÝÜÒ[Bˆ	Ù^›ÝÜÒ[
+X]]Ñ™YT›ÝÜÒ[È	ÏÝ[OH™›Û\Ú^™NŒLœØÛÛÜŽ˜\ŠK]^LÊNÜY[™ÎŽ»%a;)àH;ekzêª{'m;%á»%­;&¥Ü‰Èˆ	ÉÊ_Bˆ]ÛˆÛ\ÜÏH˜YY^[œÙKXˆˆÛ˜ÛXÚÏH˜Y^[œÙJ
+HŠÈ;ekzêªH;-¥:¬ Ø]Û‚ˆ]ˆÛ\ÜÏHœÙ]K\ÝXˆº¬è;(%{)à;-§;ejz¬áÜ[ˆÛ\ÜÏHœÝX‹]˜[‰ÝÛÛŠÝ[YXÝ[ÛœÊ_OÜÜ[Ù]‚ˆÙ]‚‚ˆ]ˆÛ\ÜÏHœÙ]K\ÙXÝ[ÛˆˆÝ[OH™›Û\Ú^™NŒLœØÛÛÜŽ˜\ŠK]^LŠNÛ[™KZZYÚŒKŽ‚ˆ]ˆÛ\ÜÏHœÙ]K]]H¼'äâˆ:éé;-§;&¥;%oOÙ]‚ˆ]ˆÝ[OH™\Ü^N™›^Ú\ÝYžKXÛÛ[œÜXÙKX™]ÙY[ˆÜ[»-'H:éé;-§ÜÜ[ˆÝ[OH˜ÛÛÜŽ˜\ŠK]^
+H‰ÝÛÛŠÝ[™]™[YJ_OØÙ]‚ˆ]ˆÝ[OH™\Ü^N™›^Ú\ÝYžKXÛÛ[œÜXÙKX™]ÙY[ˆÜ[»-'H;&ä:¬ ÜÜ[ˆÝ[OH˜ÛÛÜŽ˜\ŠK]^
+H‰ÝÛÛŠÝ[™]™[YHHÝ[X\™Ú[Š_OØÙ]‚ˆ]ˆÝ[OH™\Ü^N™›^Ú\ÝYžKXÛÛ[œÜXÙKX™]ÙY[ˆÜ[»-'H:éâ;)áÜÜ[ˆÝ[OH˜ÛÛÜŽ˜\ŠK\ÝXØÙ\ÜÊH‰ÝÛÛŠÝ[X\™Ú[Š_OØÙ]‚ˆÙ]‚‚ˆ]ˆÛ\ÜÏHœÙ]K\ÙXÝ[Ûˆ‚ˆ]ˆÛ\ÜÏHœÙ]K]]HˆÝ[OH™\Ü^N™›^Ø[YÛ‹Z][\Î˜Ù[\ŽÙØ\Ž‚ˆ<'äâÈ;,.:¬è;ekzêªBˆÜ[ˆÝ[OH™›Û\Ú^™NŒL\Ù›Û]ÙZYÚØÛÛÜŽ˜\ŠK]^LÊNØ˜XÚÙÜ›Ý[™˜\ŠK\Ý\™˜XÙKLŠNÜY[™ÎŒœØ›Ü™\‹\˜Y]\ÎŒŒ»"';"&;'mH:¬á; ¬:ëî;cë;ejÜÜ[‚ˆÙ]‚ˆÝ[OH™›Û\Ú^™NŒL\ØÛÛÜŽ˜\ŠK]^LÊNÛX\™Ú[‹X›ÝÛNŒLº®";%h{'a:®,:èg{em:äd:â¥;&ªzãá:èg:éã; «;&ª{em;&¥Ü‚ˆ]ˆÛ\ÜÏH™™YK\›ÝÈ‚ˆÜ[ˆÛ\ÜÏH™™YK[X™[¼'ãíûî#È:éé:éé:ã :®"ÜÜ[‚ˆ[œ]Û\ÜÏHœÙ]KZ[œ]ˆ\OH›[X™\ˆˆZ[HŒˆÝ\HŒL‚ˆ˜[YOH‰Ü™Y’][\Ë˜YH	ÉßHˆXÙZÛ\Hº®";%hH
+;&ä
+H‚ˆÛ˜Ú[™ÙOHœ™Y’][\Ë˜YO\\œÙR[
+\Ë˜[YKœ™\XÙJÖ×—KÙË	ÉÊJ_ÈØ]™T™Y’][\Ê
+H‚ˆÜ[ˆÛ\ÜÏH™™YKX\œ›ÝÈˆÝ[OH˜ÛÛÜŽ˜\ŠK]^LÊNÙ›Û\Ú^™NŒLœ‰Ü™Y’][\Ë˜YHÈÛÛŠ™Y’][\Ë˜YJHˆ	ÉßOÜÜ[‚ˆÙ]‚ˆ]ˆÛ\ÜÏH™™YK\›ÝÈ‚ˆÜ[ˆÛ\ÜÏH™™YK[X™[¼'æäˆ;/e;"©;b®;/e:®";%hOÜÜ[‚ˆ[œ]Û\ÜÏHœÙ]KZ[œ]ˆ\OH›[X™\ˆˆZ[HŒˆÝ\HŒL‚ˆ˜[YOH‰Ü™Y’][\Ë˜ÛÜÝÛÈ	ÉßHˆXÙZÛ\Hº®";%hH
+;&ä
+H‚ˆÛ˜Ú[™ÙOHœ™Y’][\Ë˜ÛÜÝÛÏ\\œÙR[
+\Ë˜[YKœ™\XÙJÖ×—KÙË	ÉÊJ_ÈØ]™T™Y’][\Ê
+H‚ˆÜ[ˆÛ\ÜÏH™™YKX\œ›ÝÈˆÝ[OH˜ÛÛÜŽ˜\ŠK]^LÊNÙ›Û\Ú^™NŒLœ‰Ü™Y’][\Ë˜ÛÜÝÛÈÈÛÛŠ™Y’][\Ë˜ÛÜÝÛÊHˆ	ÉßOÜÜ[‚ˆÙ]‚ˆ	Ê™Y’][\Ë˜YH™Y’][\Ë˜ÛÜÝÛÊHÈˆ]ˆÛ\ÜÏHœÙ]K\ÝXˆˆÝ[OH˜ÛÛÜŽ˜\ŠK]^LŠH‚ˆ;,.:¬è;ejz¬áÜ[ˆÝ[OH˜ÛÛÜŽ˜\ŠK]^
+H‰ÝÛÛŠ
+™Y’][\Ë˜Y_
+H
+È
+™Y’][\Ë˜ÛÜÝÛß
+J_OÜÜ[‚ˆÙ]˜ˆ	ÉßBˆÙ]‚ˆÂŸB‚™[˜Ý[ÛˆØ]™PÝ\ÝÛPÛÜÝ
+ÜÓ˜[YK[œ][Ø]™Y[
+HÂˆÛÛœÝÛÜÝH\œÙR[
+Ýš[™Ê[œ][˜[YJKœ™\XÙJÖ×—KÙË	ÉÊJHÂˆÛÛœÝÙ^HHÝ\ÝÛPÛÜÝÙ^JÜÓ˜[YJNÂˆžHÂˆš\™X˜\ÙK™]X˜\ÙJ
+Kœ™YŠ	ÜÜ×ØÝ\ÝÛWØÛÜÝËÉÈ
+ÈÙ^JKœÙ]
+ÛÜÝ
+Bˆ[Š
+
+HOˆÂˆYˆ
+Ø]™Y[
+HÂˆØ]™Y[œÝ[K™\Ü^HH	Ú[›[™IÎÂˆÙ][Y[Ý]
+
+
+HOˆÈØ]™Y[œÝ[K™\Ü^HH	Û›Û™IÎÈKL
+NÂˆBˆJBˆ˜Ø]Ú
+\œˆOˆ[\
+	û( ;'©H;"é;c*ˆ	È
+È\œ‹›Y\ÜØYÙJJNÂˆHØ]Ú
+JHÂˆÛÛœÛÛKØ\›Š	ÜØ]™PÝ\ÝÛPÛÜÝ\œ›ÜŽ‰ËJNÂˆBŸB‚™[˜Ý[Ûˆ™Yœ™\Ú›ÙXÝÊ
+HÂˆÛÛœÝˆHØÝ[Y[™Ù][[Y[žRY
+	Ü™Yœ™\Ú‰ÊNÂˆYˆ
+XŠH™]\›ŽÂˆ‹™\ØX›YHYNÂˆ‹^ÛÛ[H	ø£ìÈ:í¢:çë;&):â¥;)$K‹‹‰ÎÂˆžHÂˆÛÛœÝˆHš\™X˜\ÙK™]X˜\ÙJ
+NÂˆ‹œ™YŠ	Ü›ÙXÝÉÊK›Û˜ÙJ	Ý˜[YIÊK[ŠÛ˜\OˆÂˆÛÛœÝHÛ˜\˜[
+
+NÂˆYˆ
+	‰ˆ›\Ý	‰ˆ›\Ý›[™Ý
+HÂˆ›ÙXÝÈH›\ÝÂˆYˆ
+ÜÔ›ÝÜË›[™Ý
+HX]ÚÛÜÝÊ
+NÂˆ‹^ÛÛ[H	ø§$È2a{($H;fa:èã	ÎÂˆÙ][Y[Ý]
+
+
+HOˆÈ‹^ÛÛ[H	ø¡®È;&ä:¬ ; â:èg:¬è;.j	ÎÈ‹™\ØX›YH˜[ÙNÈKŒ
+NÂˆH[ÙHÂˆ‹^ÛÛ[H	ø¡®È;&ä:¬ ; â:èg:¬è;.j‰ÎÈ‹™\ØX›YH˜[ÙNÂˆBˆJK˜Ø]Ú
+
+
+HOˆÈ‹^ÛÛ[H	ø¡®È;&ä:¬ ; â:èg:¬è;.j‰ÎÈ‹™\ØX›YH˜[ÙNÈJNÂˆHØ]Ú
+JHÂˆ‹^ÛÛ[H	ø¡®È;&ä:¬ ; â:èg:¬è;.j‰ÎÈ‹™\ØX›YH˜[ÙNÂˆBŸB‚™[˜Ý[ÛˆX]ÚÛÜÝÊ
+HÂˆ[›X]ÚYÙ]˜ÛX\Š
+NÂ‚ˆÜÔ›ÝÜË™›Ü‘XXÚ
+ˆOˆÂˆYˆ
+\Ó›Û”›ÙXÝ
+‹›˜[YJJHÂˆ‹˜ÛÜÝHÈ‹›X\™Ú[ˆH‹œØ[TšXÙNÈ‹›X]ÚYHYNÈ‹š\ÔšXÙHHYNÂˆ™]\›ŽÂˆB‚ˆÛÛœÝÙ^HHÝ\ÝÛPÛÜÝÙ^J‹›˜[YJNÂˆYˆ
+Ý\ÝÛPÛÜÝÖÚÙ^WHOOH[™Yš[™Y
+HÂˆ‹˜ÛÜÝHÝ\ÝÛPÛÜÝÖÚÙ^WH
+ˆ‹œ]NÂˆ‹›X\™Ú[ˆH‹œØ[TšXÙHH‹˜ÛÜÝÂˆ‹›X]ÚYHYNÂˆ‹š\ÐÝ\ÝÛHHYNÂˆ‹›X]ÚY˜[YHH[Âˆ™]\›ŽÂˆB‚ˆÛÛœÝHš[™›ÙXÝÛX\
+‹›˜[YJNÂˆYˆ
+
+HÂˆ‹˜ÛÜÝH
+˜ÛÜÝ
+H
+ˆ‹œ]NÂˆ‹›X\™Ú[ˆH‹œØ[TšXÙHH‹˜ÛÜÝÂˆ‹›X]ÚYHYNÂˆ‹š\ÐÝ\ÝÛHH˜[ÙNÂˆ‹›X]ÚY˜[YHH›˜[YNÂˆH[ÙHÂˆ‹˜ÛÜÝHÂˆ‹›X\™Ú[ˆH‹œØ[TšXÙNÂˆ‹›X]ÚYH˜[ÙNÂˆ‹š\ÐÝ\ÝÛHH˜[ÙNÂˆ[›X]ÚYÙ]˜Y
+‹›˜[YJNÂˆBˆJNÂ‚ˆ™[™\Š
+NÂŸB‚™[˜Ý[ÛˆÙ]›ÝÜÊ
+HÂˆÛÛœÝHHš[\“[ÛÂˆÛÛœÝÜÈHÜÔ›ÝÜË™š[\ŠˆOˆ‹™]KœÝ\ÕÚ]
+JJNÂˆÛÛœÝØ\Ú][\ÈH×NÂˆØ\Ú˜]Âˆ™š[\ŠÈOˆË™]H	‰ˆË™]KœÝ\ÕÚ]
+JJBˆ™›Ü‘XXÚ
+Ø[HOˆÂˆÛÛœÝ][\ÈHØ[Kš][\È×NÂˆÛÛœÝ\ØÛÝ[HØ[K™\ØÛÝ[ÂˆÛÛœÝÝX•Ý[H][\Ëœ™YXÙJ
+ËJHOˆÈ
+È
+KœšXÙH
+H
+ˆ
+Kœ]HJK
+NÂˆ][\Ë™›Ü‘XXÚ
+][HOˆÂˆÛÛœÝ˜]ÈH
+][KœšXÙH
+H
+ˆ
+][Kœ]HJNÂˆÛÛœÝ\ØÈHÝX•Ý[ˆÈX]œ›Ý[™
+\ØÛÝ[
+ˆ˜]ÈÈÝX•Ý[
+HˆÂˆÛÛœÝ™]™[YHHX]›X^
+˜]ÈH\ØÊNÂˆÛÛœÝÛÜÝH
+][K˜ÛÜÝ
+H
+ˆ
+][Kœ]HJNÂˆØ\Ú][\Ëœ\Ú
+Âˆ]NˆØ[K™]Kˆ˜[YNˆ][K›˜[YKˆ]Nˆ][Kœ]HKˆØ[TšXÙNˆ™]™[YKˆÛÜÝˆX\™Ú[Žˆ™]™[YHHÛÜÝˆX]ÚYˆYKˆÛÝ\˜ÙNˆ	ØØ\Ú	Ëˆ^NˆØ[Kœ^Kˆ˜[šÎˆØ[K˜˜[šÈ	ÉÂˆJNÂˆJNÂˆJNÂ‚ˆYˆ
+XÝ]™TÛÝ\˜ÙHOOH	ÜÜÉÊH™]\›ˆÜÎÂˆYˆ
+XÝ]™TÛÝ\˜ÙHOOH	ØØ\Ú	ÊH™]\›ˆØ\Ú][\ÎÂˆ™]\›ˆË‹‹œÜË‹‹˜Ø\Ú][\×NÂŸB‚˜ÛÛœÝÛÛˆHˆOˆ	ø ªIÈ
+ÈX]œ›Ý[™
+ˆ
+KÓØØ[TÝš[™Ê	ÚÛËRÔ‰ÊNÂ˜ÛÛœÝÝH
+KŠHOˆˆˆÈ
+
+HÈŠH
+ˆL
+KÑš^Y
+JH
+È	ÉIÈˆ	ø %	ÎÂ‚™[˜Ý[Ûˆ™[™\Š
+HÂˆÛÛœÝ›ÝÜÈHÙ]›ÝÜÊ
+NÂˆ™[™\”Ý]Ê›ÝÜÊNÂˆYˆ
+XÝ]™UXˆOOH	Ù]IÊH™[™\‘]J›ÝÜÊNÂˆ[ÙHYˆ
+XÝ]™UXˆOOH	Ü›ÙXÝ	ÊH™[™\”›ÙXÝ
+›ÝÜÊNÂˆ[ÙHYˆ
+XÝ]™UXˆOOH	ÜÙ]IÊH™[™\”Ù]J
+NÂˆ[ÙH™[™\‘]Z[
+›ÝÜÊNÂŸB‚™[˜Ý[Ûˆ™[™\”Ý]Ê›ÝÜÊHÂˆÛÛœÝÝ[H›ÝÜËœ™YXÙJ
+ËŠHOˆÈ
+È
+‹œØ[TšXÙH
+K
+NÂˆÛÛœÝÛÜÝH›ÝÜËœ™YXÙJ
+ËŠHOˆÈ
+È
+‹˜ÛÜÝ
+K
+NÂˆÛÛœÝX\™Ú[ˆH›ÝÜËœ™YXÙJ
+ËŠHOˆÈ
+È
+‹›X\™Ú[ˆ
+K
+NÂˆÛÛœÝ˜]HHÝ[ˆÈ
+X\™Ú[ˆÈÝ[
+ˆL
+HˆÂ‚ˆØÝ[Y[™Ù][[Y[žRY
+	ÜÝ]Ý[	ÊH^ÛÛ[HÝ[ÈÛÛŠÝ[
+Hˆ	ø %	ÎÂˆØÝ[Y[™Ù][[Y[žRY
+	ÜÝXÛÜÝ	ÊH^ÛÛ[HÛÜÝÈÛÛŠÛÜÝ
+Hˆ	ø %	ÎÂˆØÝ[Y[™Ù][[Y[žRY
+	ÜÝ[X\™Ú[‰ÊK^ÛÛ[HX\™Ú[ˆÈÛÛŠX\™Ú[ŠHˆ	ø %	ÎÂˆØÝ[Y[™Ù][[Y[žRY
+	ÜÝ\˜]IÊH^ÛÛ[HÝ[È˜]KÑš^Y
+JH
+È	ÉIÈˆ	ø %	ÎÂˆØÝ[Y[™Ù][[Y[žRY
+	Ü˜]P˜\‰ÊKœÝ[KÚYHX]›Z[ŠL˜]JH
+È	ÉIÎÂŸB‚™[˜Ý[Ûˆ™[™\‘]J›ÝÜÊHÂˆÛÛœÝ[™[HØÝ[Y[™Ù][[Y[žRY
+	Ü[™[Y]IÊNÂˆYˆ
+\›ÝÜË›[™Ý
+HÈ[™[š[›™\’SH[\R[
+
+NÈ™]\›ŽÈB‚ˆÛÛœÝX\HßNÂˆ›ÝÜË™›Ü‘XXÚ
+ˆOˆÂˆYˆ
+[X\Ü‹™]WJHX\Ü‹™]WHHÈÝ[ˆÛÜÝˆX\™Ú[ŽˆÛˆNÂˆÛÛœÝHX\Ü‹™]WNÂˆÝ[
+ÏH‹œØ[TšXÙNÈ˜ÛÜÝ
+ÏH‹˜ÛÜÝÈ›X\™Ú[ˆ
+ÏH‹›X\™Ú[ŽÈ˜Û
+ÊÎÂˆJNÂ‚ˆÛÛœÝ]\ÈHØš™XÝšÙ^\ÊX\
+KœÛÜ
+
+Kœ™]™\œÙJ
+NÂˆÛÛœÝX^˜]HHX]›X^
+‹‹™]\Ë›X\
+OˆX\ÙKÝ[ˆÈX\ÙK›X\™Ú[ˆÈX\ÙKÝ[ˆ
+KŒJNÂ‚ˆÛÛœÝØ\›ˆHZ[Ø\›˜[›™\Š
+NÂ‚ˆÛÛœÝ›ÙHH]\Ë›X\
+OˆÂˆÛÛœÝˆHX\ÙNÂˆÛÛœÝ˜]HH‹Ý[ˆÈ‹›X\™Ú[ˆÈ‹Ý[ˆÂˆÛÛœÝ˜\•ÈH
+
+˜]HÈX^˜]JH
+ˆL
+KÑš^Y
+
+NÂˆÛÛœÝÝÈHÉöo	Ë	æå	Ë	ûfe	Ë	û"&	Ë	úêªIË	ú®"	Ë	ûa¨	×VÛ™]È]J
+K™Ù]^J
+WNÂˆ™]\›ˆ‚ˆ‰ÙOØˆÜ[ˆÛ\ÜÏH˜ÛÛ[]]YŠ	ÙÝßJOÜÜ[Ý‚ˆÛ\ÜÏHšYK^È‰Ý‹˜ÛOÝ‚ˆ‰ÝÛÛŠ‹Ý[
+_OÝ‚ˆÛ\ÜÏHšYK^È‰ÝÛÛŠ‹˜ÛÜÝ
+_OÝ‚ˆÛ\ÜÏH˜ÛÛYÜ™Y[ˆ‰ÝÛÛŠ‹›X\™Ú[Š_OÝ‚ˆ‚ˆ]ˆÛ\ÜÏH›X˜\‹XÙ[‚ˆ	ÜÝ
+‹›X\™Ú[‹‹Ý[
+_Bˆ]ˆÛ\ÜÏH›X˜\ˆ]ˆÛ\ÜÏH›X˜\‹Yš[ˆÝ[OHÚY‰Ø˜\•ßIHÙ]Ù]‚ˆÙ]‚ˆÝ‚ˆÝ˜ÂˆJKš›Ú[Š	ÉÊNÂ‚ˆÛÛœÝH›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹œØ[TšXÙK
+NÂˆÛÛœÝÈH›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹˜ÛÜÝ
+NÂˆÛÛœÝHH›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹›X\™Ú[‹
+NÂ‚ˆ[™[š[›™\’SHØ\›ˆ
+È]ˆÛ\ÜÏH›]Ü˜\X›HÛ\ÜÏH›‚ˆXY‚ˆºà¨;)çÝÛ\ÜÏHšYK^Èº¬m;"&Ý‚ˆºéé;-§ÝÛ\ÜÏHšYK^È»&ä:¬ Ý‚ˆºéâ;)áÝºéâ;)á;'*Ý‚ˆÝÝXY‚ˆ›ÙO‰Ø›Ù_OÝ›ÙO‚ˆ›ÛÝˆÛ\ÜÏHÝ[\›ÝÈ‚ˆ»ejz¬áÝ‚ˆÛ\ÜÏHšYK^È‰Ü›ÝÜË›[™ÝOÝ‚ˆ‰ÝÛÛŠ
+_OÝÛ\ÜÏHšYK^È‰ÝÛÛŠÊ_OÝ‚ˆÛ\ÜÏH˜ÛÛYÜ™Y[ˆ‰ÝÛÛŠJ_OÝ‚ˆ‰ÜÝ
+K
+_OÝ‚ˆÝÝ›ÛÝ‚ˆÝX›OÙ]˜ÂŸB‚™[˜Ý[Ûˆ™[™\”›ÙXÝ
+›ÝÜÊHÂˆÛÛœÝ[™[HØÝ[Y[™Ù][[Y[žRY
+	Ü[™[\›ÙXÝ	ÊNÂˆYˆ
+\›ÝÜË›[™Ý
+HÈ[™[š[›™\’SH[\R[
+
+NÈ™]\›ŽÈB‚ˆÛÛœÝX\HßNÂˆ›ÝÜË™›Ü‘XXÚ
+ˆOˆÂˆYˆ
+[X\Ü‹›˜[YWJHX\Ü‹›˜[YWHHÈÝ[ŒÛÜÝŒX\™Ú[ŽŒ]NŒX]ÚYœ‹›X]ÚY\ÐÝ\ÝÛNˆH\‹š\ÐÝ\ÝÛHNÂˆÛÛœÝHX\Ü‹›˜[YWNÂˆÝ[
+ÏH‹œØ[TšXÙNÈ˜ÛÜÝ
+ÏH‹˜ÛÜÝÈ›X\™Ú[ˆ
+ÏH‹›X\™Ú[ŽÈœ]H
+ÏH‹œ]NÂˆYˆ
+\‹›X]ÚY
+H›X]ÚYH˜[ÙNÂˆYˆ
+‹š\ÐÝ\ÝÛJHš\ÐÝ\ÝÛHHYNÂˆJNÂ‚ˆÛÛœÝ›ÙÈHØš™XÝ™[šY\ÊX\
+KœÛÜ
+
+KŠHOˆ–ÌWK›X\™Ú[ˆHVÌWK›X\™Ú[ŠNÂˆÛÛœÝH›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹œØ[TšXÙK
+NÂˆÛÛœÝÈH›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹˜ÛÜÝ
+NÂˆÛÛœÝHH›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹›X\™Ú[‹
+NÂ‚ˆÛÛœÝ›ÙHH›ÙË›X\
+
+Û˜[YK—JHOˆÂˆÛÛœÝ›YÈH]‹›X]ÚYÈ	ÈÜ[ˆ]OH»&ä:¬ :ëî;fe{'nˆÝ[OH˜ÛÛÜŽ˜\ŠK]Ø\›ŠH¸¥ãÏÜÜ[‰Èˆ	ÉÎÂˆ]ÛÜÝÛÛÂˆYˆ
+]‹›X]ÚY
+HÂˆÛÜÝÛÛHÜ[ˆÛ\ÜÏH˜ÛÛ]Ø\›ˆ»&ä:¬ :ëî;fe{'nÜÜ[˜ÂˆH[ÙHYˆ
+‹š\ÐÝ\ÝÛJHÂˆÛÜÝÛÛH	ÝÛÛŠ‹˜ÛÜÝ
+_HÜ[ˆÛ\ÜÏH˜ÛÛXÝ\ÝÛHˆ]OH»)à{($H;'¡zè){eg;&ä:¬ ¸§#ÜÜ[˜ÂˆH[ÙHÂˆÛÜÝÛÛHÛÛŠ‹˜ÛÜÝ
+NÂˆBˆ™]\›ˆ‚ˆ‰Û˜[Y_IÙ›YßOÝ‚ˆ‰Ý‹œ]_OÝ‚ˆ‰ÝÛÛŠ‹Ý[
+_OÝ‚ˆÛ\ÜÏHšYK^È‰ØÛÜÝÛÛOÝ‚ˆÛ\ÜÏH˜ÛÛYÜ™Y[ˆ‰ÝÛÛŠ‹›X\™Ú[Š_OÝ‚ˆ‰ÜÝ
+‹›X\™Ú[‹‹Ý[
+_OÝ‚ˆÝ˜ÂˆJKš›Ú[Š	ÉÊNÂ‚ˆÛÛœÝØ\›ˆHZ[Ø\›˜[›™\Š
+NÂˆ[™[š[›™\’SHØ\›ˆ
+È]ˆÛ\ÜÏH›]Ü˜\X›HÛ\ÜÏH›‚ˆXY‚ˆ»(';d¢:ê¡OÝ»"&:çâOÝ‚ˆºéé;-§ÝÛ\ÜÏHšYK^È»&ä:¬ Ý‚ˆºéâ;)áÝºéâ;)á;'*Ý‚ˆÝÝXY‚ˆ›ÙO‰Ø›Ù_OÝ›ÙO‚ˆ›ÛÝˆÛ\ÜÏHÝ[\›ÝÈ‚ˆ‰Ü›ÙË›[™Ý{(¡OÝ‚ˆ‰Ü›ÝÜËœ™YXÙJ
+ËŠOOœÊÜ‹œ]K
+_OÝ‚ˆ‰ÝÛÛŠ
+_OÝÛ\ÜÏHšYK^È‰ÝÛÛŠÊ_OÝ‚ˆÛ\ÜÏH˜ÛÛYÜ™Y[ˆ‰ÝÛÛŠJ_OÝ‚ˆ‰ÜÝ
+K
+_OÝ‚ˆÝÝ›ÛÝ‚ˆÝX›OÙ]˜ÂŸB‚™[˜Ý[Ûˆ™[™\‘]Z[
+›ÝÜÊHÂˆÛÛœÝ[™[HØÝ[Y[™Ù][[Y[žRY
+	Ü[™[Y]Z[	ÊNÂˆYˆ
+\›ÝÜË›[™Ý
+HÈ[™[š[›™\’SH[\R[
+
+NÈ™]\›ŽÈB‚ˆÛÛœÝÛÜYHË‹‹œ›ÝÜ×KœÛÜ
+
+KŠHOˆ‹™]K›ØØ[PÛÛ\\™JK™]JHK›˜[YK›ØØ[PÛÛ\\™J‹›˜[YJJNÂ‚ˆÛÛœÝ›ÙHHÛÜY›X\
+ˆOˆÂˆÛÛœÝ˜YÙHH‹œÛÝ\˜ÙHOOH	ÜÜÉÂˆÈ	ÏÜ[ˆÛ\ÜÏH˜˜YÙH™Ë\ÜÈ».m:äçÜÜ[‰ÂˆˆÜ[ˆÛ\ÜÏH˜˜YÙH™ËXØ\Ú‰Ü‹œ^HOOH	ú¬á;(£;'m;,­	ÈÈ
+‹˜˜[šß	ú¬á;(#	ÊHˆ;f!:®"	ßOÜÜ[˜ÂˆÛÛœÝÛÜÝÛÛH‹›X]ÚYÈÛÛŠ‹˜ÛÜÝ
+HˆÜ[ˆÛ\ÜÏH˜ÛÛ]Ø\›ˆºëî;fe{'nÜÜ[˜Âˆ™]\›ˆ‚ˆ‰Ü‹™]_OÝ‚ˆ‰Ø˜YÙ_OÝ‚ˆ‰Ü‹›˜[Y_OÝ‚ˆ‰Ü‹œ]_OÝ‚ˆ‰ÝÛÛŠ‹œØ[TšXÙJ_OÝ‚ˆÛ\ÜÏHšYK^È‰ØÛÜÝÛÛOÝ‚ˆÛ\ÜÏH˜ÛÛYÜ™Y[ˆ‰ÝÛÛŠ‹›X\™Ú[Š_OÝ‚ˆÝ˜ÂˆJKš›Ú[Š	ÉÊNÂ‚ˆ[™[š[›™\’SH]ˆÛ\ÜÏH›]Ü˜\X›HÛ\ÜÏH›‚ˆXY‚ˆºà¨;)çÝº¬¬;('Ý‚ˆ»(';d¢:ê¡OÝ»"&:çâOÝ‚ˆ»c$:éé:¬ ÝÛ\ÜÏHšYK^È»&ä:¬ Ý‚ˆºéâ;)áÝ‚ˆÝÝXY‚ˆ›ÙO‰Ø›Ù_OÝ›ÙO‚ˆÝX›OÙ]˜ÂŸB‚¡il');
   if (!rows.length) { panel.innerHTML = emptyHtml(); return; }
 
   const sorted = [...rows].sort((a,b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name));
