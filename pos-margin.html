@@ -841,13 +841,15 @@ function setSyncDot(ok) {
 
 /* ═══════════ EXCEL UPLOAD ═══════════ */
 function processFiles(files) {
-  const xlsFiles = files.filter(f => /\.(xlsx|xls)$/i.test(f.name));
-  if (!xlsFiles.length) return;
+  // 확장자 체크 — 드래그앤드롭은 필터링, 파일 input은 이미 accept로 제한됨
+  const xlsFiles = files.filter(f => /\.(xlsx|xls)$/i.test(f.name) || f.type.includes('spreadsheet') || f.type.includes('excel') || f.type === '');
+  const validFiles = xlsFiles.length ? xlsFiles : files; // 필터 실패 시 전체 처리
+  if (!validFiles.length) return;
 
-  let pending = xlsFiles.length;
+  let pending = validFiles.length;
   let incoming = [];
 
-  xlsFiles.forEach(file => {
+  validFiles.forEach(file => {
     const reader = new FileReader();
     reader.onload = ev => {
       const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: true });
