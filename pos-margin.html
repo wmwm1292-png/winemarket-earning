@@ -736,6 +736,7 @@ let expenseAmounts = {};        // {id: amount} — 고정지출 금액 (월별 
 let feeRates     = { card: 2.3, easy: 1.5, cash: 0.5 }; // 수수료율 (%)
 let payTotals    = { card: 0, easy: 0, cash: 0, cashReceipt: 0 }; // 결제수단별 월 매출액 (수동 입력)
 let refItems     = { trade: 0, costco: 0 };              // 참고용 항목 (순수익 계산 미포함)
+let productSort  = { key: 'margin', dir: 'desc' };      // 제품별 정렬 상태
 
 /* ═══════════ INIT ═══════════ */
 (function init() {
