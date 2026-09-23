@@ -70,6 +70,25 @@
   --shadow-md:  0 4px 14px rgba(0,0,0,.45);
 }
 
+/* ═══════════ SORT HEADERS ═══════════ */
+.sort-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.sort-th:hover { color: var(--primary); }
+.sort-arrow {
+  display: inline-block;
+  font-size: 11px;
+  margin-left: 3px;
+  color: var(--primary);
+  font-weight: 700;
+}
+.sort-arrow.inactive {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
 /* ═══════════ DRAG OVERLAY ═══════════ */
 .drag-overlay {
   display: none;
@@ -1340,6 +1359,8 @@ function renderSettle() {
       <div style="display:flex;justify-content:space-between"><span>총 마진</span><b style="color:var(--success)">${won(totalMargin)}</b></div>
     </div>
 
+    ${renderVatSection(totalRevenue, totalRevenue - totalMargin)}
+
     <div class="settle-section">
       <div class="settle-title" style="display:flex;align-items:center;gap:8px">
         📋 참고 항목
@@ -1366,6 +1387,44 @@ function renderSettle() {
       </div>` : ''}
     </div>
   `;
+}
+
+/* ── 부가세 섹션 ── */
+function renderVatSection(totalRevenue, totalCost) {
+  // 판매가 부가세 포함 기준: VAT = 금액 × 10/110
+  const outputVat  = Math.round(totalRevenue * 10 / 110);   // 매출 부가세 (납부)
+  const inputVat   = Math.round(totalCost    * 10 / 110);   // 매입 부가세 (공제)
+  const vatPayable = Math.max(0, outputVat - inputVat);      // 납부할 부가세 (음수 방지)
+  const vatRefund  = inputVat > outputVat ? inputVat - outputVat : 0; // 환급액
+
+  const vatColor  = vatRefund > 0 ? 'var(--success)' : 'var(--warn)';
+  const vatLabel  = vatRefund > 0 ? '🎉 환급 예상' : '📌 납부 예상 부가세';
+  const vatAmount = vatRefund > 0 ? vatRefund : vatPayable;
+
+  if (!totalRevenue) return '';
+
+  return `
+  <div class="settle-section vat-section">
+    <div class="settle-title">🧾 부가세 예상
+      <span style="font-size:11px;font-weight:400;color:var(--text-3);background:var(--surface-2);padding:2px 8px;border-radius:20px;margin-left:6px">부가세 포함 기준</span>
+    </div>
+    <div class="vat-grid">
+      <div class="vat-row">
+        <span class="vat-label">매출 부가세 <span class="vat-hint">(납부)</span></span>
+        <span class="vat-val warn">${won(outputVat)}</span>
+      </div>
+      <div class="vat-row">
+        <span class="vat-label">매입 부가세 <span class="vat-hint">(공제)</span></span>
+        <span class="vat-val ok">− ${won(inputVat)}</span>
+      </div>
+      <div class="vat-divider"></div>
+      <div class="vat-row vat-total">
+        <span class="vat-label">${vatLabel}</span>
+        <span class="vat-val" style="color:${vatColor};font-size:16px;font-weight:700">${won(vatAmount)}</span>
+      </div>
+    </div>
+    <p class="vat-note">※ POS 매출·원가 기준 추정값이에요. 실제 신고 시 세무사·홈택스와 반드시 확인하세요.</p>
+  </div>`;
 }
 
 // 사용자 입력 원가를 Firebase에 저장
@@ -1579,6 +1638,16 @@ function renderDate(rows) {
 }
 
 /* ── Product view ── */
+function sortProducts(key) {
+  if (productSort.key === key) {
+    productSort.dir = productSort.dir === 'desc' ? 'asc' : 'desc';
+  } else {
+    productSort.key = key;
+    productSort.dir = 'desc';
+  }
+  render();
+}
+
 function renderProduct(rows) {
   const panel = document.getElementById('panel-product');
   if (!rows.length) { panel.innerHTML = emptyHtml(); return; }
@@ -1592,10 +1661,27 @@ function renderProduct(rows) {
     if (r.isCustom) d.isCustom = true;
   });
 
-  const prods = Object.entries(map).sort((a, b) => b[1].margin - a[1].margin);
+  // 정렬
+  const sortFn = {
+    name:    (a, b) => a[0].localeCompare(b[0]),
+    qty:     (a, b) => a[1].qty - b[1].qty,
+    total:   (a, b) => a[1].total - b[1].total,
+    cost:    (a, b) => a[1].cost - b[1].cost,
+    margin:  (a, b) => a[1].margin - b[1].margin,
+    rate:    (a, b) => (a[1].total ? a[1].margin/a[1].total : 0) - (b[1].total ? b[1].margin/b[1].total : 0),
+  };
+  const fn = sortFn[productSort.key] || sortFn.margin;
+  const prods = Object.entries(map).sort((a, b) => productSort.dir === 'desc' ? fn(b, a) : fn(a, b));
+
   const tt = rows.reduce((s,r)=>s+r.salePrice,0);
   const tc = rows.reduce((s,r)=>s+r.cost,0);
   const tm = rows.reduce((s,r)=>s+r.margin,0);
+
+  // 헤더 정렬 표시
+  const arrow = (key) => {
+    if (productSort.key !== key) return '<span class="sort-arrow inactive">↕</span>';
+    return `<span class="sort-arrow">${productSort.dir === 'desc' ? '↓' : '↑'}</span>`;
+  };
 
   const body = prods.map(([name, v]) => {
     const flag = !v.matched ? ' <span title="원가 미확인" style="color:var(--warn)">●</span>' : '';
@@ -1620,9 +1706,12 @@ function renderProduct(rows) {
   const warn = buildWarnBanner();
   panel.innerHTML = warn + `<div class="tbl-wrap"><table class="tbl">
     <thead><tr>
-      <th>제품명</th><th>수량</th>
-      <th>매출</th><th class="hide-xs">원가</th>
-      <th>마진</th><th>마진율</th>
+      <th class="sort-th" onclick="sortProducts('name')">제품명 ${arrow('name')}</th>
+      <th class="sort-th" onclick="sortProducts('qty')">수량 ${arrow('qty')}</th>
+      <th class="sort-th" onclick="sortProducts('total')">매출 ${arrow('total')}</th>
+      <th class="sort-th hide-xs" onclick="sortProducts('cost')">원가 ${arrow('cost')}</th>
+      <th class="sort-th" onclick="sortProducts('margin')">마진 ${arrow('margin')}</th>
+      <th class="sort-th" onclick="sortProducts('rate')">마진율 ${arrow('rate')}</th>
     </tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr class="total-row">
