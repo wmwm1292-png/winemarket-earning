@@ -1097,13 +1097,16 @@ document.getElementById('fileIn').addEventListener('change', function(e) {
 function finalize(incoming) {
   // 업로드된 파일에 포함된 날짜는 통째로 교체 (삭제 항목도 반영됨)
   const incomingDates = new Set(incoming.map(r => r.date));
-  const preserved = posRows.filter(r => !incomingDates.has(r.date));
+  // 날짜 형식 정규화: YYYY-MM-DD 로 통일
+  const normDate = s => String(s || '').trim().slice(0, 10);
+  const normIncomingDates = new Set(incoming.map(r => normDate(r.date)));
+  const preserved = posRows.filter(r => !normIncomingDates.has(normDate(r.date)));
   const prevCount = posRows.length;
   posRows = [...preserved, ...incoming];
 
   const el = document.getElementById('posStatus');
-  const diff = posRows.length - prevCount;
-  el.textContent = `✅ ${posRows.length}건 로드됨 (${incomingDates.size}일치 갱신)`;
+  const dateList = [...normIncomingDates].sort().join(', ');
+  el.textContent = `✅ ${posRows.length}건 로드됨 (교체된 날짜: ${dateList})`;
   el.className = 'pos-status ok';
 
   // Firebase에 누적 저장
