@@ -818,7 +818,7 @@ input[type="month"].month-pick::-webkit-calendar-picker-indicator { filter: inve
     <div class="cost-modal-hint">판매 단가 기준 1개당 원가</div>
     <input id="costEditorInput" class="cost-modal-input" type="number" min="0" step="100"
            placeholder="원가 (원)"
-           onkeydown="if(event.key==='Enter') saveCostFromEditor()">
+           onkeydown="if(event.key==='Enter'){event.preventDefault();saveCostFromEditor();}">
     <div class="cost-modal-btns">
       <button class="cost-modal-cancel" onclick="closeCostEditor()">취소</button>
       <button class="cost-modal-save"   onclick="saveCostFromEditor()">저장</button>
@@ -1613,8 +1613,10 @@ function saveCostFromEditor() {
   try {
     firebase.database().ref('pos_custom_costs/' + key).set(cost)
       .then(() => {
+        customCosts[key] = cost;
         ok.style.display = 'block';
-        setTimeout(() => { closeCostEditor(); }, 1200);
+        render();
+        setTimeout(() => { closeCostEditor(); }, 800);
       })
       .catch(e => alert('저장 실패: ' + e.message));
   } catch(e) {
