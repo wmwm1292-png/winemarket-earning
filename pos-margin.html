@@ -1095,13 +1095,15 @@ document.getElementById('fileIn').addEventListener('change', function(e) {
 })();
 
 function finalize(incoming) {
-  // Dedup: date+name+qty+salePrice key
-  const existing = new Set(posRows.map(r => `${r.date}|${r.name}|${r.qty}|${r.salePrice}`));
-  const added = incoming.filter(r => !existing.has(`${r.date}|${r.name}|${r.qty}|${r.salePrice}`));
-  posRows = [...posRows, ...added];
+  // 업로드된 파일에 포함된 날짜는 통째로 교체 (삭제 항목도 반영됨)
+  const incomingDates = new Set(incoming.map(r => r.date));
+  const preserved = posRows.filter(r => !incomingDates.has(r.date));
+  const prevCount = posRows.length;
+  posRows = [...preserved, ...incoming];
 
   const el = document.getElementById('posStatus');
-  el.textContent = `✅ ${posRows.length}건 로드됨 (${added.length}건 추가)`;
+  const diff = posRows.length - prevCount;
+  el.textContent = `✅ ${posRows.length}건 로드됨 (${incomingDates.size}일치 갱신)`;
   el.className = 'pos-status ok';
 
   // Firebase에 누적 저장
