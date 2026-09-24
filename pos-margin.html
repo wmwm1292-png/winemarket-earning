@@ -158,17 +158,18 @@
 }
 /* 원가 편집 버튼 (테이블 안) */
 .cost-edit-btn {
-  background: none;
-  border: none;
+  background: var(--primary-lt);
+  border: 1px solid var(--border);
   cursor: pointer;
-  font-size: 12px;
-  color: var(--text-3);
-  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--primary);
+  padding: 2px 6px;
   border-radius: 4px;
   vertical-align: middle;
-  line-height: 1;
+  line-height: 1.4;
+  white-space: nowrap;
 }
-.cost-edit-btn:hover { color: var(--primary); background: var(--primary-lt); }
+.cost-edit-btn:hover { background: var(--primary); color: #fff; }
 
 /* ═══════════ VAT SECTION ═══════════ */
 .vat-section { border-left: 3px solid var(--acc-pos); }
@@ -1887,11 +1888,12 @@ function renderProduct(rows) {
     } else {
       costCol = `${won(v.cost)} ${editBtn}`;
     }
+    const costDisplay = !v.matched ? `<span class="col-warn" style="font-size:11px">미확인</span>` : won(v.cost);
     return `<tr>
-      <td>${name}</td>
+      <td>${name} ${editBtn}</td>
       <td>${v.qty}</td>
       <td>${won(v.total)}</td>
-      <td class="hide-xs">${costCol}</td>
+      <td class="hide-xs">${costDisplay}</td>
       <td class="col-green">${won(v.margin)}</td>
       <td>${pct(v.margin, v.total)}</td>
     </tr>`;
@@ -1930,17 +1932,17 @@ function renderDetail(rows) {
       ? '<span class="badge bdg-pos">카드</span>'
       : `<span class="badge bdg-cash">${r.pay === '계좌이체' ? (r.bank||'계좌') : '현금'}</span>`;
     const safe = r.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}')" title="원가 수정">✎</button>`;
+    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}')">✎ 원가</button>`;
     const costCol = r.matched
       ? `${won(r.cost)} ${editBtn}`
       : `<span class="col-warn" style="font-size:11px">미확인</span> ${editBtn}`;
     return `<tr>
       <td>${r.date}</td>
       <td>${badge}</td>
-      <td>${r.name}</td>
+      <td>${r.name}<br><span style="margin-top:3px;display:inline-block">${editBtn}</span></td>
       <td>${r.qty}</td>
       <td>${won(r.salePrice)}</td>
-      <td class="hide-xs">${costCol}</td>
+      <td class="hide-xs">${r.matched ? won(r.cost) : '<span class="col-warn" style="font-size:11px">미확인</span>'}</td>
       <td class="col-green">${won(r.margin)}</td>
     </tr>`;
   }).join('');
