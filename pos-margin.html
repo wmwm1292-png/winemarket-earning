@@ -1590,17 +1590,18 @@ function renderVatSection(totalRevenue, totalCost) {
 // 사용자 입력 원가를 Firebase에 저장
 /* ═══════════ COST EDITOR MODAL ═══════════ */
 let _costEditorName = '';
-function openCostEditor(name) {
+function openCostEditor(name, currentUnitCost) {
   _costEditorName = name;
   const key = customCostKey(name);
-  const unitCost = customCosts[key] || 0;
+  const customVal = customCosts[key] || 0;
+  const displayCost = customVal || currentUnitCost || 0;
   document.getElementById('costEditorName').textContent = name;
   const inp = document.getElementById('costEditorInput');
-  inp.value = unitCost || '';
-  inp.placeholder = unitCost ? won(unitCost) : '원가 (원)';
+  inp.value = displayCost || '';
+  inp.placeholder = displayCost ? won(displayCost) : '원가 (원)';
   document.getElementById('costEditorOk').style.display = 'none';
   document.getElementById('costEditorModal').classList.add('open');
-  setTimeout(() => inp.focus(), 100);
+  setTimeout(() => { inp.focus(); inp.select(); }, 100);
 }
 function closeCostEditor() {
   document.getElementById('costEditorModal').classList.remove('open');
@@ -1881,14 +1882,13 @@ function renderProduct(rows) {
 
   const body = prods.map(([name, v]) => {
     const safe = name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}')" title="원가 수정">✎</button>`;
+    const unitCost = v.qty ? Math.round(v.cost / v.qty) : 0;
+    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}',${unitCost})">✎ 원가</button>`;
     let costCol;
     if (!v.matched) {
-      costCol = `<span class="col-warn" style="font-size:11px">미확인</span> ${editBtn}`;
-    } else if (v.isCustom) {
-      costCol = `${won(v.cost)} ${editBtn}`;
+      costCol = `<span class="col-warn" style="font-size:11px">미확인</span>`;
     } else {
-      costCol = `${won(v.cost)} ${editBtn}`;
+      costCol = won(v.cost);
     }
     const costDisplay = !v.matched ? `<span class="col-warn" style="font-size:11px">미확인</span>` : won(v.cost);
     return `<tr>
@@ -1934,7 +1934,8 @@ function renderDetail(rows) {
       ? '<span class="badge bdg-pos">카드</span>'
       : `<span class="badge bdg-cash">${r.pay === '계좌이체' ? (r.bank||'계좌') : '현금'}</span>`;
     const safe = r.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}')">✎ 원가</button>`;
+    const unitCost = r.qty ? Math.round(r.cost / r.qty) : 0;
+    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}',${unitCost})">✎ 원가</button>`;
     const costCol = r.matched
       ? `${won(r.cost)} ${editBtn}`
       : `<span class="col-warn" style="font-size:11px">미확인</span> ${editBtn}`;
