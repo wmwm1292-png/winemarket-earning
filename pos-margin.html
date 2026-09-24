@@ -70,6 +70,133 @@
   --shadow-md:  0 4px 14px rgba(0,0,0,.45);
 }
 
+/* ═══════════ COST EDITOR MODAL ═══════════ */
+.cost-modal-bg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0,0,0,.45);
+  align-items: flex-end;
+  justify-content: center;
+}
+.cost-modal-bg.open { display: flex; }
+.cost-modal {
+  background: var(--surface);
+  border-radius: 18px 18px 0 0;
+  width: 100%;
+  max-width: 480px;
+  padding: 24px 20px 32px;
+  box-shadow: 0 -4px 24px rgba(0,0,0,.18);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cost-modal-title {
+  font-family: 'Noto Serif KR', serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cost-modal-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--primary);
+  background: var(--primary-lt);
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  word-break: break-all;
+}
+.cost-modal-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: -4px;
+}
+.cost-modal-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+}
+.cost-modal-input:focus { border-color: var(--primary); }
+.cost-modal-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.cost-modal-cancel {
+  flex: 1;
+  padding: 12px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 14px;
+}
+.cost-modal-save {
+  flex: 2;
+  padding: 12px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+.cost-modal-save:active { background: var(--primary-dk); }
+.cost-modal-ok {
+  display: none;
+  text-align: center;
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 500;
+}
+/* 원가 편집 버튼 (테이블 안) */
+.cost-edit-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 2px 4px;
+  border-radius: 4px;
+  vertical-align: middle;
+  line-height: 1;
+}
+.cost-edit-btn:hover { color: var(--primary); background: var(--primary-lt); }
+
+/* ═══════════ VAT SECTION ═══════════ */
+.vat-section { border-left: 3px solid var(--acc-pos); }
+.vat-grid { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 8px; }
+.vat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+.vat-row.vat-total { margin-top: 4px; }
+.vat-label { color: var(--text-2); }
+.vat-hint { font-size: 11px; color: var(--text-3); }
+.vat-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+.vat-val.warn { color: var(--warn); }
+.vat-val.ok   { color: var(--success); }
+.vat-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+.vat-note {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.6;
+  margin-top: 8px;
+}
+
 /* ═══════════ SORT HEADERS ═══════════ */
 .sort-th {
   cursor: pointer;
@@ -681,6 +808,23 @@ input[type="month"].month-pick::-webkit-calendar-picker-indicator { filter: inve
     <div class="sync-dot off" id="syncDot" title="Firebase 연결 상태"></div>
   </div>
 </header>
+
+<!-- ── COST EDITOR MODAL ── -->
+<div id="costEditorModal" class="cost-modal-bg" onclick="if(event.target===this)closeCostEditor()">
+  <div class="cost-modal">
+    <div class="cost-modal-title">원가 수정</div>
+    <div class="cost-modal-name" id="costEditorName"></div>
+    <div class="cost-modal-hint">판매 단가 기준 1개당 원가</div>
+    <input id="costEditorInput" class="cost-modal-input" type="number" min="0" step="100"
+           placeholder="원가 (원)"
+           onkeydown="if(event.key==='Enter') saveCostFromEditor()">
+    <div class="cost-modal-btns">
+      <button class="cost-modal-cancel" onclick="closeCostEditor()">취소</button>
+      <button class="cost-modal-save"   onclick="saveCostFromEditor()">저장</button>
+    </div>
+    <div class="cost-modal-ok" id="costEditorOk">✓ 저장됐어요</div>
+  </div>
+</div>
 
 <!-- ── DRAG OVERLAY ── -->
 <div id="dragOverlay" class="drag-overlay">
@@ -1355,8 +1499,23 @@ function renderSettle() {
     <div class="settle-section" style="font-size:12px;color:var(--text-2);line-height:1.8">
       <div class="settle-title">📊 매출 요약</div>
       <div style="display:flex;justify-content:space-between"><span>총 매출</span><b style="color:var(--text)">${won(totalRevenue)}</b></div>
-      <div style="display:flex;justify-content:space-between"><span>총 원가</span><b style="color:var(--text)">${won(totalRevenue - totalMargin)}</b></div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span>총 원가 ${unmatchedSet.size > 0 ? `<span style="color:var(--warn);font-size:11px">(미확인 ${unmatchedSet.size}개 포함)</span>` : ''}</span>
+        <b style="color:var(--text)">${won(totalRevenue - totalMargin)}</b>
+      </div>
       <div style="display:flex;justify-content:space-between"><span>총 마진</span><b style="color:var(--success)">${won(totalMargin)}</b></div>
+      ${unmatchedSet.size > 0 ? `
+      <div style="margin-top:8px;padding:10px 12px;background:var(--warn-bg);border-radius:var(--r-sm);border-left:3px solid var(--warn)">
+        <div style="color:var(--warn);font-weight:600;margin-bottom:6px;font-size:12px">⚠️ 원가 미확인 ${unmatchedSet.size}개 — 제품별 탭에서 ✎ 눌러 수정하세요</div>
+        ${[...unmatchedSet].slice(0,5).map(name => {
+          const safe = name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+            <span style="color:var(--text-2);font-size:12px">${name}</span>
+            <button class="cost-edit-btn" style="font-size:13px;padding:3px 8px;border:1px solid var(--border);border-radius:4px" onclick="openCostEditor('${safe}')">✎ 수정</button>
+          </div>`;
+        }).join('')}
+        ${unmatchedSet.size > 5 ? `<div style="color:var(--text-3);font-size:11px;margin-top:4px">외 ${unmatchedSet.size-5}개 더...</div>` : ''}
+      </div>` : ''}
     </div>
 
     ${renderVatSection(totalRevenue, totalRevenue - totalMargin)}
@@ -1428,6 +1587,40 @@ function renderVatSection(totalRevenue, totalCost) {
 }
 
 // 사용자 입력 원가를 Firebase에 저장
+/* ═══════════ COST EDITOR MODAL ═══════════ */
+let _costEditorName = '';
+function openCostEditor(name) {
+  _costEditorName = name;
+  const key = customCostKey(name);
+  const unitCost = customCosts[key] || 0;
+  document.getElementById('costEditorName').textContent = name;
+  const inp = document.getElementById('costEditorInput');
+  inp.value = unitCost || '';
+  inp.placeholder = unitCost ? won(unitCost) : '원가 (원)';
+  document.getElementById('costEditorOk').style.display = 'none';
+  document.getElementById('costEditorModal').classList.add('open');
+  setTimeout(() => inp.focus(), 100);
+}
+function closeCostEditor() {
+  document.getElementById('costEditorModal').classList.remove('open');
+}
+function saveCostFromEditor() {
+  const inp = document.getElementById('costEditorInput');
+  const ok  = document.getElementById('costEditorOk');
+  const cost = parseInt(String(inp.value).replace(/[^\d]/g, '')) || 0;
+  const key  = customCostKey(_costEditorName);
+  try {
+    firebase.database().ref('pos_custom_costs/' + key).set(cost)
+      .then(() => {
+        ok.style.display = 'block';
+        setTimeout(() => { closeCostEditor(); }, 1200);
+      })
+      .catch(e => alert('저장 실패: ' + e.message));
+  } catch(e) {
+    console.warn('saveCostFromEditor error:', e);
+  }
+}
+
 function saveCustomCost(posName, inputEl, savedEl) {
   const cost = parseInt(String(inputEl.value).replace(/[^\d]/g, '')) || 0;
   const key  = customCostKey(posName);
@@ -1684,17 +1877,18 @@ function renderProduct(rows) {
   };
 
   const body = prods.map(([name, v]) => {
-    const flag = !v.matched ? ' <span title="원가 미확인" style="color:var(--warn)">●</span>' : '';
+    const safe = name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}')" title="원가 수정">✎</button>`;
     let costCol;
     if (!v.matched) {
-      costCol = `<span class="col-warn">원가 미확인</span>`;
+      costCol = `<span class="col-warn" style="font-size:11px">미확인</span> ${editBtn}`;
     } else if (v.isCustom) {
-      costCol = `${won(v.cost)} <span class="col-custom" title="직접 입력한 원가">✎</span>`;
+      costCol = `${won(v.cost)} ${editBtn}`;
     } else {
-      costCol = won(v.cost);
+      costCol = `${won(v.cost)} ${editBtn}`;
     }
     return `<tr>
-      <td>${name}${flag}</td>
+      <td>${name}</td>
       <td>${v.qty}</td>
       <td>${won(v.total)}</td>
       <td class="hide-xs">${costCol}</td>
@@ -1735,7 +1929,11 @@ function renderDetail(rows) {
     const badge = r.source === 'pos'
       ? '<span class="badge bdg-pos">카드</span>'
       : `<span class="badge bdg-cash">${r.pay === '계좌이체' ? (r.bank||'계좌') : '현금'}</span>`;
-    const costCol = r.matched ? won(r.cost) : `<span class="col-warn">미확인</span>`;
+    const safe = r.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    const editBtn = `<button class="cost-edit-btn" onclick="openCostEditor('${safe}')" title="원가 수정">✎</button>`;
+    const costCol = r.matched
+      ? `${won(r.cost)} ${editBtn}`
+      : `<span class="col-warn" style="font-size:11px">미확인</span> ${editBtn}`;
     return `<tr>
       <td>${r.date}</td>
       <td>${badge}</td>
