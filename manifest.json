@@ -1,0 +1,1 @@
+{"name": "와인샵 마진분석", "short_name": "마진분석", "description": "POS 매출 원가·마진 분석 도구", "start_url": "/pos-margin.html", "display": "standalone", "background_color": "#0f0f1a", "theme_color": "#7c3aed", "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]}
