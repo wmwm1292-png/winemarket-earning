@@ -1286,13 +1286,12 @@ function stripYear(s) {
     .trim();
 }
 
-// 가격·비제품 행인지 확인 (1,000 / 물품 등)
+// 가격 행인지 확인 (숫자만 있는 행 — 1,000 / 5,000)
 function isNonProduct(name) {
   const t = name.trim();
   if (/^[\d,]+$/.test(t)) return true;  // 가격만: 1,000 / 5,000
-  if (t === '물품') return true;          // 비품
   return false;
-  // ※ ml 포함 항목(봄베이 750ml, 잭다니엘 375ml 등)은 정품이므로 필터 제거
+  // ※ '물품' 항목은 실제 판매 상품이므로 필터에서 제외
 }
 
 // 편집 거리 유사도 (오타 보정용 — 클↔크, 스↔즈 등 1~2자 차이 처리, 0~1)
